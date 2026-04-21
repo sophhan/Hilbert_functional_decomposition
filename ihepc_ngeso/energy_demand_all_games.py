@@ -15,36 +15,9 @@ structure:
     Daily 48-period trajectories (T=48).
     Place demanddata_2018.csv ... demanddata_2022.csv in ./data/ngeso/
 
-Core argument
--------------
-Both datasets share the same formal structure (day-level features ->
-daily demand trajectory) but the underlying generating process differs
-fundamentally:
-
-  IHEPC: One household's routine. The morning peak (07-09h) and evening
-  peak (18-21h) are driven by partially independent triggers. The
-  correlation matrix has a local maximum near each peak and modest
-  off-diagonal structure. The correlation kernel produces explanations
-  that respect this two-phase structure.
-
-  NESO: Aggregate demand across ~30M consumers. Temperature and season
-  dominate, lifting or suppressing the entire trajectory quasi-uniformly.
-  The correlation matrix is nearly flat at ~0.8-0.9 everywhere. The
-  correlation kernel correctly produces near-constant weighting across
-  time -- reflecting that regime features (month, season) affect the
-  entire day as a unit rather than specific phases.
-
-The OU kernel with a fixed length-scale cannot adapt to either structure
-automatically: it treats 07:00 and 19:00 as nearly independent regardless
-of whether they are (IHEPC) or are not (NESO). The correlation kernel is
-the only choice that reads the dependence structure from the data.
-
-Models  : RandomForestRegressor, direct multi-output (no PCA, no t input)
-Games   : prediction, sensitivity, risk
-Kernels : Identity (baseline), Correlation (main argument)
-
 Figures
 -------
+  fig0_main_body.pdf                         -- main body summary
   fig1_correlation_matrices.pdf              -- side-by-side kernel comparison
   fig2_main_effects_ppf_identity_ihepc.pdf   -- pure/partial/full, identity kernel, IHEPC
   fig3_main_effects_ppf_identity_neso.pdf    -- pure/partial/full, identity kernel, NESO
@@ -54,8 +27,8 @@ Figures
   fig6_main_effects_ppf_neso.pdf             -- pure/partial/full, corr. kernel, NESO
   fig7_sensitivity_gap_ihepc.pdf             -- functional Sobol gap, IHEPC
   fig8_sensitivity_gap_neso.pdf              -- functional Sobol gap, NESO
-  fig9_summary_ihepc.pdf                     -- 2x4 summary (id vs corr), IHEPC
-  fig10_summary_neso.pdf                     -- 2x4 summary (id vs corr), NESO
+  fig_network_appendix_ihepc.pdf             -- 3x3 all games, corr. kernel, IHEPC
+  fig_network_appendix_neso.pdf              -- 3x3 all games, corr. kernel, NESO
 """
 
 import itertools
@@ -69,6 +42,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
@@ -199,8 +173,26 @@ _XAI_LABELS_E = {
 
 _EFFECT_TYPES_E = ['pure', 'partial', 'full']
 
-# Legend locations per row for pure/partial/full figures
-_LEG_LOC_E = {0: 'upper left', 1: 'lower left', 2: 'lower center'}
+# Legend locations per row for curve panels (col 0)
+# row 0: upper left, row 1: lower left, row 2: lower left
+_LEG_LOC_E = {0: 'upper left', 1: 'lower left', 2: 'lower left'}
+
+# Network node / edge colours
+_NODE_POS = '#2a9d8f'
+_NODE_NEG = '#e63946'
+_EDGE_SYN = '#2a9d8f'
+_EDGE_RED = '#e63946'
+
+# 3-letter abbreviations for network node labels
+FEAT_ABBR = {
+    'day_of_week'   : 'DoW',
+    'is_weekend'    : 'WeD',
+    'month'         : 'Mon',
+    'season'        : 'Sea',
+    'lag_daily_mean': 'LDM',
+    'lag_morning'   : 'LMo',
+    'lag_evening'   : 'LEv',
+}
 
 
 # ===========================================================================
@@ -350,13 +342,10 @@ def apply_kernel(effect, K, dt=1.0):
 # ===========================================================================
 
 def _pure_effects_e(mob, p, T):
-    """Pure (main) effect m_{(i,)}(t) for each player i."""
-    return {i: mob.get((i,), np.zeros(T)).copy()
-            for i in range(p)}
+    return {i: mob.get((i,), np.zeros(T)).copy() for i in range(p)}
 
 
 def _full_effects_e(mob, p, T):
-    """Full (superset) effect: sum_{S containing i} m_S(t)."""
     full = {i: np.zeros(T) for i in range(p)}
     for S, m in mob.items():
         if len(S) == 0:
@@ -569,7 +558,7 @@ def savefig(fig, name):
 
 
 # ===========================================================================
-# 7.  Figure 1 -- Correlation matrix comparison
+# 7.  Figure 1 -- Correlation matrix comparison (no annotations)
 # ===========================================================================
 
 def fig_correlation_matrices(ds_ihepc, ds_neso, K_ihepc, K_neso):
@@ -595,12 +584,12 @@ def fig_correlation_matrices(ds_ihepc, ds_neso, K_ihepc, K_neso):
         morning = ds['morning']
         evening = ds['evening']
         am_mid  = (morning[0] + morning[1]) // 2
-        pm_mid  = (evening[0] + evening[1]) // 2
 
         step     = max(1, T // 8)
         tick_i   = list(range(0, T, step))
         tick_lbl = [tlabels[i] for i in tick_i]
 
+        # ── Heatmap ───────────────────────────────────────────────────────
         ax = axes_heat[col]
         im = ax.imshow(
             K, aspect='auto', origin='upper',
@@ -614,39 +603,18 @@ def fig_correlation_matrices(ds_ihepc, ds_neso, K_ihepc, K_neso):
         ax.set_title(
             DS_LABEL[tag],
             fontsize=FS_TITLE, fontweight='bold', color=DS_COLOR[tag])
-
-        ax.annotate(
-            'AM$\\times$PM\n$K={:.2f}$'.format(K[am_mid, pm_mid]),
-            xy=(pm_mid, am_mid),
-            xytext=(pm_mid + T * 0.05, am_mid - T * 0.12),
-            fontsize=7, color='#333',
-            arrowprops=dict(arrowstyle='->', color='#555', lw=1.0))
-
-        for (r0, r1), (c0, c1), ec in [
-            (morning, morning, '#4a90e2'),
-            (evening, evening, '#e24a4a'),
-            (morning, evening, '#9b59b6'),
-            (evening, morning, '#9b59b6'),
-        ]:
-            rect = plt.Rectangle(
-                (c0-0.5, r0-0.5), c1-c0, r1-r0,
-                linewidth=1.2, edgecolor=ec,
-                facecolor='none', zorder=3)
-            ax.add_patch(rect)
-
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04).ax.tick_params(
             labelsize=6)
 
+        # ── AM row-slice ──────────────────────────────────────────────────
         ax2 = axes_row[col]
         t_vec = np.arange(T, dtype=float)
         ax2.plot(t_vec, K[am_mid, :],
-                 color=DS_COLOR[tag], lw=2.2,
-                 label='Empirical correlation')
+                 color=DS_COLOR[tag], lw=2.2)
         ax2.axhline(0, color='gray', lw=0.5, ls=':')
         ax2.axvline(am_mid, color='gray', lw=0.8, ls=':', alpha=0.5)
         ax2.axvspan(*morning, alpha=0.12, color='#4a90e2')
         ax2.axvspan(*evening, alpha=0.12, color='#e24a4a')
-
         ax2.set_title(
             'Row $K(t_{{AM}}, s)$ — {}'.format(
                 'IHEPC' if tag == 'ihepc' else 'NESO'),
@@ -658,37 +626,16 @@ def fig_correlation_matrices(ds_ihepc, ds_neso, K_ihepc, K_neso):
         ax2.set_ylabel('$K(t_{{AM}},\\ s)$', fontsize=FS_AXIS)
         ax2.tick_params(labelsize=FS_TICK)
 
-        if tag == 'ihepc':
-            ax2.annotate(
-                'Secondary peak\n(AM$\\leftrightarrow$PM)',
-                xy=(pm_mid, K[am_mid, pm_mid]),
-                xytext=(pm_mid - T * 0.3, K[am_mid, pm_mid] + 0.15),
-                fontsize=7, color='#9b59b6',
-                arrowprops=dict(arrowstyle='->', color='#9b59b6', lw=1.0))
-        else:
-            mid = T // 2
-            ax2.annotate(
-                'Nearly uniform\n(regime-dominated)',
-                xy=(mid, K[am_mid, mid]),
-                xytext=(mid - T * 0.25, K[am_mid, mid] - 0.15),
-                fontsize=7, color='#555',
-                arrowprops=dict(arrowstyle='->', color='#555', lw=1.0))
-
     return fig
 
 
 # ===========================================================================
-# 8.  Figures 2 & 3 -- Main effects (identity / correlation kernel)
-#     2 rows (datasets) x 3 cols (games)
+# 8.  Figure 2 & 3 -- Main effects, identity kernel, pure/partial/full
+#     3 rows (games) x 4 cols (pure/partial/full/importance bars)
+#     Col 3 has extra width; legend shifted outside to the right.
 # ===========================================================================
 
 def fig_main_effects_ppf_identity(ds, mob_dict, shap_dict, top_k=5):
-    """
-    Pure / partial / full main effects for one dataset, identity kernel.
-    Mirrors fig_main_effects_ppf but uses K_id instead of K_corr.
-    Rows: prediction / sensitivity / risk.
-    Cols: pure / partial / full / integrated importance bars.
-    """
     tag      = ds['tag']
     features = ds['features']
     p        = len(features)
@@ -699,8 +646,8 @@ def fig_main_effects_ppf_identity(ds, mob_dict, shap_dict, top_k=5):
 
     fig, axes = plt.subplots(
         3, 4,
-        figsize=(18, 4.0 * 3),
-        gridspec_kw={'width_ratios': [3, 3, 3, 1.8]},
+        figsize=(19, 4.0 * 3),
+        gridspec_kw={'width_ratios': [3, 3, 3, 2.4]},
     )
     fig.suptitle(
         'Main effects — Identity kernel — pure / partial / full\n'
@@ -721,14 +668,12 @@ def fig_main_effects_ppf_identity(ds, mob_dict, shap_dict, top_k=5):
             'full'   : full_eff,
         }
 
-        # Rank by partial abs importance (identity kernel = raw integral)
         imps_partial = {
             i: float(np.sum(np.abs(partial_eff[i])))
             for i in range(p)
         }
         top = sorted(imps_partial, key=imps_partial.get, reverse=True)[:top_k]
 
-        # ── Curve panels (cols 0-2) ───────────────────────────────────────
         for c, etype in enumerate(_EFFECT_TYPES_E):
             ax  = axes[r, c]
             eff = effect_dicts[etype]
@@ -753,7 +698,6 @@ def fig_main_effects_ppf_identity(ds, mob_dict, shap_dict, top_k=5):
                 ax.legend(fontsize=FS_LEGEND,
                           loc=_LEG_LOC_E[r], framealpha=0.85)
 
-        # ── Integrated importance bars (col 3) ────────────────────────────
         ax_bar = axes[r, 3]
         imps_all = {
             etype: {
@@ -790,7 +734,9 @@ def fig_main_effects_ppf_identity(ds, mob_dict, shap_dict, top_k=5):
         ax_bar.tick_params(labelsize=FS_TICK)
         ax_bar.set_title('Integrated\nimportance\n(identity kernel)',
                          fontsize=FS_TITLE, fontweight='bold')
-        ax_bar.legend(fontsize=FS_LEGEND, loc='upper right')
+        # bar legend: just outside right edge, close to the bars
+        ax_bar.legend(fontsize=FS_LEGEND, loc='upper right',
+                      bbox_to_anchor=(1.22, 1.0), borderaxespad=0.)
 
     plt.tight_layout()
     return fig
@@ -799,6 +745,7 @@ def fig_main_effects_ppf_identity(ds, mob_dict, shap_dict, top_k=5):
 # ===========================================================================
 # 9.  Figure 4 -- Profile comparison
 #     2 rows (identity / correlation) x 6 cols (3 IHEPC + 3 NESO)
+#     Suptitle raised; plots enlarged; more hspace for legends.
 # ===========================================================================
 
 def fig_profiles_comparison(
@@ -819,14 +766,15 @@ def fig_profiles_comparison(
 
     fig, axes = plt.subplots(
         nrows, ncols,
-        figsize=(4.0 * ncols, 3.8 * nrows),
-        gridspec_kw={'hspace': 0.55, 'wspace': 0.35})
+        figsize=(4.6 * ncols, 4.4 * nrows),
+        gridspec_kw={'hspace': 0.65, 'wspace': 0.38})
 
     fig.suptitle(
         'Shapley curves — prediction game\n'
         'Identity kernel (top) vs Empirical correlation kernel (bottom)\n'
         'UCI IHEPC  |  NESO GB Demand',
-        fontsize=FS_SUPTITLE, fontweight='bold')
+        fontsize=FS_SUPTITLE, fontweight='bold',
+        y=1.04)
 
     ihepc_titles = {
         'Typical weekday' : 'Typical weekday\n(Tue-Fri, mild)',
@@ -840,14 +788,14 @@ def fig_profiles_comparison(
     }
 
     for row, (k_label, K_ih, K_ne) in enumerate(kernels_ordered):
-        ds = ds_ihepc
+        # ── IHEPC panels ─────────────────────────────────────────────────
+        ds       = ds_ihepc
         features = ds['features']
         p        = len(features)
         t_grid   = ds['t_grid']
 
-        all_mob_ih = {lbl: mob for lbl, (mob, shap) in prof_ihepc.items()}
         imps_ih = np.zeros(p)
-        for mob in all_mob_ih.values():
+        for mob, _ in prof_ihepc.values():
             for i in range(p):
                 imps_ih[i] += float(np.sum(np.abs(mob[(i,)])))
         top_ih = sorted(range(p), key=lambda i: imps_ih[i], reverse=True)[:4]
@@ -874,16 +822,17 @@ def fig_profiles_comparison(
                         fontsize=FS_AXIS, va='center', ha='right',
                         rotation=90, color='#333', fontweight='bold')
             if c == 0 and row == 0:
-                ax.legend(fontsize=FS_LEGEND, loc='upper left')
+                ax.legend(fontsize=FS_LEGEND, loc='upper left',
+                          framealpha=0.9)
 
-        ds = ds_neso
+        # ── NESO panels ───────────────────────────────────────────────────
+        ds       = ds_neso
         features = ds['features']
         p        = len(features)
         t_grid   = ds['t_grid']
 
-        all_mob_ne = {lbl: mob for lbl, (mob, shap) in prof_neso.items()}
         imps_ne = np.zeros(p)
-        for mob in all_mob_ne.values():
+        for mob, _ in prof_neso.values():
             for i in range(p):
                 imps_ne[i] += float(np.sum(np.abs(mob[(i,)])))
         top_ne = sorted(range(p), key=lambda i: imps_ne[i], reverse=True)[:4]
@@ -906,30 +855,36 @@ def fig_profiles_comparison(
             if c == 0:
                 ax.set_ylabel(ds['ylabel']['prediction'], fontsize=FS_AXIS)
             if c == 0 and row == 0:
-                ax.legend(fontsize=FS_LEGEND, loc='upper left')
+                ax.legend(fontsize=FS_LEGEND, loc='upper left',
+                          framealpha=0.9)
 
-    fig.text(0.27, 0.98, 'UCI IHEPC (single household, kW)',
+    fig.text(0.27, 1.02, 'UCI IHEPC (single household, kW)',
              ha='center', fontsize=FS_AXIS, fontweight='bold',
              color=DS_COLOR['ihepc'])
-    fig.text(0.73, 0.98, 'NESO GB Demand (national grid, MW)',
+    fig.text(0.73, 1.02, 'NESO GB Demand (national grid, MW)',
              ha='center', fontsize=FS_AXIS, fontweight='bold',
              color=DS_COLOR['neso'])
 
+    plt.tight_layout()
     return fig
 
 
 # ===========================================================================
-# 10. Figure 5/6 -- Pure / partial / full main effects (one dataset)
-#     3 rows (games) x 4 cols (pure / partial / full / importance bars)
-#     Kernel: empirical correlation kernel
+# 10. Figure 5 & 6 -- Pure/partial/full, correlation kernel
+#     3 rows (games) x 4 cols (pure/partial/full/importance bars)
+#     Plots enlarged; row-1 col-0 legend top-left;
+#     col-3 legend shifted outside to the right.
 # ===========================================================================
 
-def fig_main_effects_ppf(ds, mob_dict, shap_dict, K, top_k=5):
+def fig_main_effects_ppf(ds, mob_dict, shap_dict, K, top_k=5,
+                          legend_on_full=False):
     """
-    Pure / partial / full main effects for one dataset.
-    Rows: prediction / sensitivity / risk.
-    Cols: pure / partial / full / integrated importance bars.
-    Kernel: empirical correlation (passed as K).
+    Pure / partial / full main effects for one dataset, correlation kernel.
+
+    legend_on_full=False  (default, fig 5 IHEPC):
+        legend on col 0 (pure), using _leg_loc_ppf per row.
+    legend_on_full=True   (fig 6 NESO):
+        no legend on col 0; legend on col 2 (full), center-left.
     """
     tag      = ds['tag']
     features = ds['features']
@@ -940,14 +895,17 @@ def fig_main_effects_ppf(ds, mob_dict, shap_dict, K, top_k=5):
 
     fig, axes = plt.subplots(
         3, 4,
-        figsize=(18, 4.0 * 3),
-        gridspec_kw={'width_ratios': [3, 3, 3, 1.8]},
+        figsize=(19, 4.4 * 3),
+        gridspec_kw={'width_ratios': [3, 3, 3, 2.4]},
     )
     fig.suptitle(
         'Main effects — Empirical correlation kernel — pure / partial / full\n'
         '{}'.format(DS_LABEL[tag].replace('\n', '  ')),
         fontsize=FS_SUPTITLE, fontweight='bold',
     )
+
+    # legend location for col-0 (used only when legend_on_full=False)
+    _leg_loc_ppf = {0: 'upper left', 1: 'upper left', 2: 'lower center'}
 
     for r, gtype in enumerate(GAME_TYPES):
         mob = mob_dict[gtype]
@@ -975,10 +933,11 @@ def fig_main_effects_ppf(ds, mob_dict, shap_dict, K, top_k=5):
 
             for fi in top:
                 curve = apply_kernel(eff[fi], K)
+                # always store label so either col can show the legend
                 ax.plot(t_grid, curve,
                         color=FEAT_COLORS[features[fi]],
                         lw=2.0,
-                        label=features[fi] if c == 0 else '_')
+                        label=features[fi])
 
             ax.axhline(0, color='gray', lw=0.5, ls=':')
             _shade(ax, ds)
@@ -990,8 +949,15 @@ def fig_main_effects_ppf(ds, mob_dict, shap_dict, K, top_k=5):
 
             if c == 0:
                 ax.set_ylabel(ylabel[gtype], fontsize=FS_AXIS)
+                if not legend_on_full:
+                    # fig 5 behaviour: legend on pure col
+                    ax.legend(fontsize=FS_LEGEND,
+                              loc=_leg_loc_ppf[r], framealpha=0.85)
+
+            if c == 2 and legend_on_full:
+                # fig 6 behaviour: legend on full col, center-left
                 ax.legend(fontsize=FS_LEGEND,
-                          loc=_LEG_LOC_E[r], framealpha=0.85)
+                          loc='center left', framealpha=0.85)
 
         # ── Integrated importance bars (col 3) ────────────────────────────
         ax_bar = axes[r, 3]
@@ -1031,21 +997,19 @@ def fig_main_effects_ppf(ds, mob_dict, shap_dict, K, top_k=5):
         ax_bar.tick_params(labelsize=FS_TICK)
         ax_bar.set_title('Integrated\nimportance\n(corr. kernel)',
                          fontsize=FS_TITLE, fontweight='bold')
-        ax_bar.legend(fontsize=FS_LEGEND, loc='upper right')
+        ax_bar.legend(fontsize=FS_LEGEND, loc='upper right',
+                      bbox_to_anchor=(1.22, 1.0), borderaxespad=0.)
 
     plt.tight_layout()
     return fig
 
 
 # ===========================================================================
-# 11. Figures 7/8 -- Sensitivity gap  Delta_tau_i(t)
-#     Top-4 features by integrated |gap|, correlation kernel
+# 11. Figures 7 & 8 -- Sensitivity gap  Delta_tau_i(t)
+#     Legends placed below each subplot.
 # ===========================================================================
 
 def fig_sensitivity_gap_e(ds, mob_sens, K, top_k=4):
-    """
-    Functional Sobol gap for sensitivity game, correlation kernel.
-    """
     tag      = ds['tag']
     features = ds['features']
     p        = len(features)
@@ -1061,8 +1025,6 @@ def fig_sensitivity_gap_e(ds, mob_sens, K, top_k=4):
         for i in range(p)
     }
     top = sorted(gap_imp, key=gap_imp.get, reverse=True)[:top_k]
-
-    _leg_locs = ['lower left', 'lower left', 'lower center', 'lower center']
 
     fig, axes = plt.subplots(
         1, top_k,
@@ -1109,239 +1071,22 @@ def fig_sensitivity_gap_e(ds, mob_sens, K, top_k=4):
             fontsize=FS_TITLE, fontweight='bold',
             color=col,
         )
-        ax.legend(fontsize=FS_LEGEND,
-                  loc=_leg_locs[idx], framealpha=0.85)
+        # legend placed below the subplot
+        ax.legend(
+            fontsize=FS_LEGEND,
+            loc='upper center',
+            bbox_to_anchor=(0.5, -0.22),
+            ncol=2,
+            framealpha=0.85,
+        )
 
     plt.tight_layout()
+    fig.subplots_adjust(bottom=0.22)
     return fig
 
 
 # ===========================================================================
-# 12. Figures 9/10 -- Summary figure  2 rows x 4 cols (one dataset)
-#
-#   Rows:  prediction game  |  risk game
-#   Cols:  pure  |  partial  |  top interaction  |  importance bars
-#
-#   Within cols 0-2:
-#     faded thin  = identity kernel  (baseline)
-#     vivid thick = correlation kernel
-#     top-2 features by prediction partial importance
-# ===========================================================================
-
-def fig_summary_e(ds, mob_dict, shap_dict, K_corr, top_k_bar=5):
-    """
-    2-row x 4-col summary for one dataset.
-    Identity kernel curves overlaid (faded) with correlation kernel (vivid).
-    """
-    tag      = ds['tag']
-    features = ds['features']
-    p        = len(features)
-    T        = ds['T']
-    t_grid   = ds['t_grid']
-    ylabel   = ds['ylabel']
-
-    K_id = kernel_identity(T)
-
-    # ── Pre-compute effects ───────────────────────────────────────────────
-    pure_pred    = _pure_effects_e(mob_dict['prediction'], p, T)
-    partial_pred = shap_dict['prediction']
-    pure_risk    = _pure_effects_e(mob_dict['risk'],       p, T)
-    partial_risk = shap_dict['risk']
-
-    # Top-2 features by correlation-kernel partial prediction importance
-    imps_pred = {
-        i: float(np.sum(np.abs(apply_kernel(partial_pred[i], K_corr))))
-        for i in range(p)
-    }
-    top2 = sorted(imps_pred, key=imps_pred.get, reverse=True)[:2]
-    fi_1, fi_2 = top2[0], top2[1]
-    c_1 = FEAT_COLORS[features[fi_1]]
-    c_2 = FEAT_COLORS[features[fi_2]]
-
-    # Top interaction pair by prediction game raw Möbius importance
-    pair_imp = {
-        (i, j): float(np.sum(np.abs(
-            mob_dict['prediction'].get((i, j), np.zeros(T)))))
-        for i in range(p) for j in range(i+1, p)
-    }
-    top_pair = max(pair_imp, key=pair_imp.get)
-    fi_a, fi_b = top_pair
-
-    # ── Visual constants ──────────────────────────────────────────────────
-    ID_ALPHA, ID_LW = 0.30, 1.2
-    MX_LW           = 2.2
-
-    row_specs = [
-        ('prediction', ylabel['prediction'],
-         'Pure  $m_i$  $\\equiv$  PDP',
-         'Partial  $\\phi_i$  $\\equiv$  Shapley (SHAP)',
-         pure_pred, partial_pred),
-        ('risk',       ylabel['risk'],
-         'Pure  $m_i$  $\\equiv$  Pure Risk',
-         'Partial  $\\phi_i$  $\\equiv$  SAGE',
-         pure_risk, partial_risk),
-    ]
-    row_labels = ['Prediction game', 'Risk game']
-
-    fig, axes = plt.subplots(
-        2, 4,
-        figsize=(17, 7.5),
-        gridspec_kw={'width_ratios': [3, 3, 3, 1.8]},
-    )
-    fig.suptitle(
-        '{}: Kernel Choice, Game Type and Effect Decomposition'.format(
-            'UCI IHEPC' if tag == 'ihepc' else 'NESO GB Demand'),
-        fontsize=FS_SUPTITLE, fontweight='bold',
-    )
-
-    for r, (gtype, y_label, lbl_pure, lbl_partial,
-            pure_eff, partial_eff) in enumerate(row_specs):
-
-        # ── Col 0: pure ──────────────────────────────────────────────────
-        ax = axes[r, 0]
-        # identity (faded)
-        ax.plot(t_grid, apply_kernel(pure_eff[fi_1], K_id),
-                color=c_1, lw=ID_LW, ls='-',  alpha=ID_ALPHA)
-        ax.plot(t_grid, apply_kernel(pure_eff[fi_2], K_id),
-                color=c_2, lw=ID_LW, ls='--', alpha=ID_ALPHA)
-        # correlation kernel (vivid)
-        ax.plot(t_grid, apply_kernel(pure_eff[fi_1], K_corr),
-                color=c_1, lw=MX_LW, ls='-',
-                label=features[fi_1])
-        ax.plot(t_grid, apply_kernel(pure_eff[fi_2], K_corr),
-                color=c_2, lw=MX_LW, ls='--',
-                label=features[fi_2])
-        ax.axhline(0, color='gray', lw=0.5, ls=':')
-        _shade(ax, ds)
-        _xticks(ax, ds)
-        ax.tick_params(labelsize=FS_TICK)
-        ax.set_xlabel('Time', fontsize=FS_AXIS)
-        ax.set_ylabel(y_label, fontsize=FS_AXIS)
-        ax.set_title(lbl_pure, fontsize=FS_TITLE, fontweight='bold')
-        ax.text(-0.32, 0.5, row_labels[r],
-                transform=ax.transAxes,
-                fontsize=FS_AXIS, va='center', ha='right',
-                rotation=90, color='#333', fontweight='bold')
-
-        if r == 0:
-            handles = [
-                Line2D([0], [0], color=c_1, lw=MX_LW, ls='-',
-                       label='{} (corr.)'.format(features[fi_1])),
-                Line2D([0], [0], color=c_2, lw=MX_LW, ls='--',
-                       label='{} (corr.)'.format(features[fi_2])),
-                Line2D([0], [0], color='gray', lw=ID_LW, ls='-',
-                       alpha=0.6, label='identity (faded)'),
-            ]
-            ax.legend(handles=handles, fontsize=FS_LEGEND,
-                      loc='upper center', framealpha=0.9)
-
-        # ── Col 1: partial ───────────────────────────────────────────────
-        ax = axes[r, 1]
-        ax.plot(t_grid, apply_kernel(partial_eff[fi_1], K_id),
-                color=c_1, lw=ID_LW, ls='-',  alpha=ID_ALPHA)
-        ax.plot(t_grid, apply_kernel(partial_eff[fi_2], K_id),
-                color=c_2, lw=ID_LW, ls='--', alpha=ID_ALPHA)
-        ax.plot(t_grid, apply_kernel(partial_eff[fi_1], K_corr),
-                color=c_1, lw=MX_LW, ls='-')
-        ax.plot(t_grid, apply_kernel(partial_eff[fi_2], K_corr),
-                color=c_2, lw=MX_LW, ls='--')
-        ax.axhline(0, color='gray', lw=0.5, ls=':')
-        _shade(ax, ds)
-        _xticks(ax, ds)
-        ax.tick_params(labelsize=FS_TICK)
-        ax.set_xlabel('Time', fontsize=FS_AXIS)
-        ax.set_title(lbl_partial, fontsize=FS_TITLE, fontweight='bold')
-
-        # pure->partial ratio annotation for top feature
-        pure_int = float(np.sum(np.abs(
-            apply_kernel(pure_eff[fi_1], K_corr))))
-        part_int = float(np.sum(np.abs(
-            apply_kernel(partial_eff[fi_1], K_corr))))
-        ratio = part_int / pure_int if pure_int > 1e-12 else 1.0
-        ax.text(0.03, 0.97,
-                '{}: partial/pure\n= {:.2f}$\\times$'.format(
-                    features[fi_1], ratio),
-                transform=ax.transAxes,
-                fontsize=FS_ANNOT - 1, va='top', color=c_1,
-                bbox=dict(boxstyle='round,pad=0.25',
-                          fc='white', ec='#ddd', alpha=0.9))
-
-        # ── Col 2: top interaction ────────────────────────────────────────
-        ax = axes[r, 2]
-        raw    = mob_dict[gtype].get(top_pair, np.zeros(T))
-        int_id = apply_kernel(raw, K_id)
-        ax.plot(t_grid, int_id, color='#888', lw=ID_LW, alpha=ID_ALPHA)
-        int_cx = apply_kernel(raw, K_corr)
-        pos = np.where(int_cx >= 0, int_cx, 0.0)
-        neg = np.where(int_cx <  0, int_cx, 0.0)
-        ax.fill_between(t_grid, 0, pos, color='#2a9d8f', alpha=0.30)
-        ax.fill_between(t_grid, 0, neg, color='#e63946', alpha=0.30)
-        ax.plot(t_grid, int_cx, color='#333', lw=MX_LW - 0.4)
-        ax.axhline(0, color='gray', lw=0.5, ls=':')
-        _shade(ax, ds)
-        _xticks(ax, ds)
-        ax.tick_params(labelsize=FS_TICK)
-        ax.set_xlabel('Time', fontsize=FS_AXIS)
-        ax.set_title(
-            'Interaction  $m_{{ij}}(t)$\n'
-            '{} $\\times$ {}'.format(features[fi_a], features[fi_b]),
-            fontsize=FS_TITLE, fontweight='bold')
-        integ = float(np.trapz(raw, t_grid))
-        ax.text(0.03, 0.97,
-                r'$\int m_{{ij}}\,dt$ = {:.3f}'.format(integ),
-                transform=ax.transAxes,
-                fontsize=FS_ANNOT, va='top', ha='left',
-                bbox=dict(boxstyle='round,pad=0.25',
-                          fc='white', ec='#aaa', alpha=0.85))
-
-        # ── Col 3: importance bars ────────────────────────────────────────
-        ax = axes[r, 3]
-        imps_part = {
-            i: float(np.sum(np.abs(apply_kernel(partial_eff[i], K_corr))))
-            for i in range(p)
-        }
-        imps_pure = {
-            i: float(np.sum(np.abs(apply_kernel(pure_eff[i], K_corr))))
-            for i in range(p)
-        }
-        order = sorted(range(p),
-                       key=lambda i: imps_part[i], reverse=True)[:top_k_bar]
-        y_pos = np.arange(len(order))
-        bar_h = 0.35
-        ax.barh(y_pos - bar_h / 2,
-                [imps_pure[i] for i in order], height=bar_h,
-                color=[FEAT_COLORS[features[i]] for i in order],
-                alpha=0.45, hatch='//', label='pure')
-        ax.barh(y_pos + bar_h / 2,
-                [imps_part[i] for i in order], height=bar_h,
-                color=[FEAT_COLORS[features[i]] for i in order],
-                alpha=0.90, label='partial (Shapley)')
-        ax.set_yticks(y_pos)
-        ax.set_yticklabels([features[i] for i in order], fontsize=FS_TICK)
-        ax.axvline(0, color='gray', lw=0.8, ls=':')
-        ax.set_xlabel(r'$\int|\cdot|\,dt$', fontsize=FS_AXIS)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.tick_params(labelsize=FS_TICK)
-        ax.set_title('Integrated\nimportance\n(corr. kernel)',
-                     fontsize=FS_TITLE, fontweight='bold')
-        ax.legend(fontsize=FS_LEGEND, loc='upper right')
-
-    plt.tight_layout(rect=[0.04, 0, 1, 0.95])
-    fig.subplots_adjust(top=0.92)
-    return fig
-
-
-# ===========================================================================
-# 13. Figure 0 -- Main-body summary (3 rows x 4 cols)
-#
-#   Row 0 (compact): Correlation matrix heatmaps + AM row-slices
-#                    IHEPC (cols 0-1) | NESO (cols 2-3)
-#   Row 1: Shapley prediction curves
-#          identity (faded) overlaid with correlation kernel (vivid)
-#          IHEPC (cols 0-1) | NESO (cols 2-3)
-#   Row 2: Sensitivity gap for top-1 feature per dataset
-#          IHEPC (cols 0-1) | NESO (cols 2-3)
+# 12. Figure 0 -- Main-body summary
 # ===========================================================================
 
 def fig0_main_body(ds_ih, ds_ne,
@@ -1349,55 +1094,111 @@ def fig0_main_body(ds_ih, ds_ne,
                    mob_ne, shap_ne,
                    K_ih,   K_ne):
     """
-    Main-body figure: 4 rows x variable cols.
-
-    Row 0 (compact):  correlation heatmaps + AM row-slices, both datasets
-    Row 1 (tall):     prediction curves, identity (faded) + corr. kernel (vivid)
-                      pure and partial, both datasets
-    Row 2 (tall):     sensitivity gap for top feature, both datasets
-    Row 3 (medium):   4 network panels (partial / Shapley / corr. kernel)
-                      IHEPC sensitivity | NESO sensitivity |
-                      IHEPC prediction  | NESO prediction
+    Layout (3 rows):
+      Row 0 (compact, centred): correlation heatmaps + AM row-slices
+      Row 1 (tall):             pure + partial prediction curves, both datasets
+      Row 2 (wide):             [IHEPC gap | IHEPC nets (2x2)] [NESO gap | NESO nets (2x2)]
     """
-    fig = plt.figure(figsize=(16, 18))
+    fig = plt.figure(figsize=(22, 13))
 
-    gs = GridSpec(4, 1, figure=fig,
-                  height_ratios=[0.85, 2.2, 1.9, 1.6],
-                  hspace=0.52)
-    gs.update(top=0.93)
+    # ── Outer grid: 3 rows ────────────────────────────────────────────────
+    gs_outer = GridSpec(
+        3, 1, figure=fig,
+        height_ratios=[0.72, 1.55, 1.95],
+        hspace=0.52,          # increased gap between row1 and row2
+        top=0.91, bottom=0.07,
+        left=0.05, right=0.98,
+    )
 
-    # Row 0: heatmap + row-slice for each dataset
-    gs0 = GridSpecFromSubplotSpec(1, 4, subplot_spec=gs[0],
-                                  wspace=0.32,
-                                  width_ratios=[1, 1.4, 1, 1.4])
-    ax_ih_heat = fig.add_subplot(gs0[0])
-    ax_ih_row  = fig.add_subplot(gs0[1])
-    ax_ne_heat = fig.add_subplot(gs0[2])
-    ax_ne_row  = fig.add_subplot(gs0[3])
+    # ── Row 0: centred heatmaps + row-slices ─────────────────────────────
+    gs0_wrap = GridSpecFromSubplotSpec(
+        1, 3,
+        subplot_spec=gs_outer[0],
+        width_ratios=[0.06, 1.0, 0.06],
+        wspace=0.0,
+    )
+    gs0_inner = GridSpecFromSubplotSpec(
+        1, 4,
+        subplot_spec=gs0_wrap[1],
+        wspace=0.35,
+        width_ratios=[1, 1.4, 1, 1.4],
+    )
+    ax_ih_heat = fig.add_subplot(gs0_inner[0])
+    ax_ih_row  = fig.add_subplot(gs0_inner[1])
+    ax_ne_heat = fig.add_subplot(gs0_inner[2])
+    ax_ne_row  = fig.add_subplot(gs0_inner[3])
 
-    # Row 1: pure + partial prediction, both datasets
-    gs1 = GridSpecFromSubplotSpec(1, 4, subplot_spec=gs[1], wspace=0.38)
+    # ── Row 1: prediction panels ──────────────────────────────────────────
+    gs1 = GridSpecFromSubplotSpec(
+        1, 4,
+        subplot_spec=gs_outer[1],
+        wspace=0.32,
+    )
     ax_ih_pure = fig.add_subplot(gs1[0])
     ax_ih_part = fig.add_subplot(gs1[1])
     ax_ne_pure = fig.add_subplot(gs1[2])
     ax_ne_part = fig.add_subplot(gs1[3])
 
-    # Row 2: sensitivity gap
-    gs2 = GridSpecFromSubplotSpec(1, 2, subplot_spec=gs[2], wspace=0.35)
-    ax_ih_gap = fig.add_subplot(gs2[0])
-    ax_ne_gap = fig.add_subplot(gs2[1])
+    # ── Row 2: [IHEPC gap | IHEPC nets] [NESO gap | NESO nets] ──────────
+    gs2 = GridSpecFromSubplotSpec(
+        1, 2,
+        subplot_spec=gs_outer[2],
+        wspace=0.22,
+    )
 
-    # Row 3: 4 network panels
-    gs3 = GridSpecFromSubplotSpec(1, 4, subplot_spec=gs[3], wspace=0.10)
-    ax_nets = [fig.add_subplot(gs3[c]) for c in range(4)]
+    # IHEPC half: gap panel + 2x2 networks
+    gs2_ih = GridSpecFromSubplotSpec(
+        1, 2,
+        subplot_spec=gs2[0],
+        wspace=0.30,
+        width_ratios=[1.1, 1.0],
+    )
+    ax_ih_gap = fig.add_subplot(gs2_ih[0])
+    gs2_ih_nets = GridSpecFromSubplotSpec(
+        2, 2,
+        subplot_spec=gs2_ih[1],
+        hspace=0.08,
+        wspace=0.08,
+    )
+    ax_net_ih_sens_0 = fig.add_subplot(gs2_ih_nets[0, 0])
+    ax_net_ih_sens_1 = fig.add_subplot(gs2_ih_nets[0, 1])
+    ax_net_ih_pred_0 = fig.add_subplot(gs2_ih_nets[1, 0])
+    ax_net_ih_pred_1 = fig.add_subplot(gs2_ih_nets[1, 1])
+
+    # NESO half: gap panel + 2x2 networks
+    gs2_ne = GridSpecFromSubplotSpec(
+        1, 2,
+        subplot_spec=gs2[1],
+        wspace=0.30,
+        width_ratios=[1.1, 1.0],
+    )
+    ax_ne_gap = fig.add_subplot(gs2_ne[0])
+    gs2_ne_nets = GridSpecFromSubplotSpec(
+        2, 2,
+        subplot_spec=gs2_ne[1],
+        hspace=0.08,
+        wspace=0.08,
+    )
+    ax_net_ne_sens_0 = fig.add_subplot(gs2_ne_nets[0, 0])
+    ax_net_ne_sens_1 = fig.add_subplot(gs2_ne_nets[0, 1])
+    ax_net_ne_pred_0 = fig.add_subplot(gs2_ne_nets[1, 0])
+    ax_net_ne_pred_1 = fig.add_subplot(gs2_ne_nets[1, 1])
+
+    # ── Font sizes (enlarged for fig0) ───────────────────────────────────
+    FS_SUP  = 15
+    FS_T    = 13
+    FS_AX   = 11.5
+    FS_TK   = 10
+    FS_LEG  = 10
+    FS_RLAB = 11.5
 
     fig.suptitle(
         'Energy demand: correlation structure drives explanation shape\n'
         'UCI IHEPC (single household, kW)  vs  NESO GB Demand (national grid, MW)',
-        fontsize=FS_SUPTITLE, fontweight='bold', y=0.975)
+        fontsize=FS_SUP, fontweight='bold', y=0.975)
 
     ID_ALPHA, ID_LW = 0.25, 1.1
-    MX_LW           = 2.2
+    MX_LW           = 2.4
     K_id_ih = kernel_identity(ds_ih['T'])
     K_id_ne = kernel_identity(ds_ne['T'])
 
@@ -1410,25 +1211,24 @@ def fig0_main_body(ds_ih, ds_ne,
                        cmap='RdBu_r', vmin=-0.2, vmax=1.0)
         ax.set_xticks(ticks)
         ax.set_xticklabels([tlabels[i] for i in ticks],
-                           rotation=45, ha='right', fontsize=5.5)
+                           rotation=45, ha='right', fontsize=6.5)
         ax.set_yticks(ticks)
-        ax.set_yticklabels([tlabels[i] for i in ticks], fontsize=5)
+        ax.set_yticklabels([tlabels[i] for i in ticks], fontsize=6)
         ax.set_title(DS_LABEL[tag].replace('\n', ' '),
-                     fontsize=FS_AXIS - 1, fontweight='bold',
+                     fontsize=FS_AX, fontweight='bold',
                      color=DS_COLOR[tag])
         am = (ds['morning'][0] + ds['morning'][1]) // 2
         ax.axhline(am, color='white', lw=0.8, ls='--', alpha=0.6)
         ax.axvline(am, color='white', lw=0.8, ls='--', alpha=0.6)
         plt.colorbar(im, ax=ax, fraction=0.06, pad=0.03).ax.tick_params(
-            labelsize=5)
+            labelsize=6)
 
     # ── Helper: AM row-slice ──────────────────────────────────────────────
     def _rowslice(ax, ds, K, tag):
-        T, tlabels = ds['T'], ds['tlabels']
+        T, tlabels       = ds['T'], ds['tlabels']
         morning, evening = ds['morning'], ds['evening']
-        am   = (morning[0] + morning[1]) // 2
-        pm   = (evening[0] + evening[1]) // 2
-        step = max(1, T // 6)
+        am    = (morning[0] + morning[1]) // 2
+        step  = max(1, T // 6)
         ticks = list(range(0, T, step))
         ax.plot(np.arange(T), K[am, :], color=DS_COLOR[tag], lw=2.0)
         ax.axhline(0, color='gray', lw=0.5, ls=':')
@@ -1436,20 +1236,14 @@ def fig0_main_body(ds_ih, ds_ne,
         ax.axvspan(*evening, alpha=0.12, color='#e24a4a')
         ax.set_xticks(ticks)
         ax.set_xticklabels([tlabels[i] for i in ticks],
-                           rotation=45, ha='right', fontsize=5.5)
+                           rotation=45, ha='right', fontsize=6.5)
         ax.set_xlim(-0.5, T - 0.5)
-        ax.set_ylabel('$K(t_{AM}, s)$', fontsize=FS_AXIS - 2)
-        ax.set_xlabel('Time $s$', fontsize=FS_AXIS - 2)
-        ax.tick_params(labelsize=FS_TICK - 1)
-        ax.annotate(
-            'K={:.2f}'.format(K[am, pm]),
-            xy=(pm, K[am, pm]),
-            xytext=(pm + T * 0.08, K[am, pm] + 0.09),
-            fontsize=7, color=DS_COLOR[tag],
-            arrowprops=dict(arrowstyle='->', color=DS_COLOR[tag], lw=0.8))
+        ax.set_ylabel('$K(t_{AM}, s)$', fontsize=FS_AX - 1)
+        ax.set_xlabel('Time $s$',        fontsize=FS_AX - 1)
+        ax.tick_params(labelsize=FS_TK - 1)
         title = ('Structured (AM$\\leftrightarrow$PM)'
                  if tag == 'ihepc' else 'Uniform (regime-dominated)')
-        ax.set_title(title, fontsize=FS_AXIS - 2, color=DS_COLOR[tag],
+        ax.set_title(title, fontsize=FS_AX, color=DS_COLOR[tag],
                      fontweight='bold')
 
     # ── Row 0 ─────────────────────────────────────────────────────────────
@@ -1458,7 +1252,7 @@ def fig0_main_body(ds_ih, ds_ne,
     _heatmap( ax_ne_heat, ds_ne, K_ne, 'neso')
     _rowslice(ax_ne_row,  ds_ne, K_ne, 'neso')
 
-    # ── Helper: prediction panel (identity faded + corr. kernel vivid) ───
+    # ── Helper: prediction panel ──────────────────────────────────────────
     def _pred_panel(ax, ds, mob, shap, K_id, K_corr,
                     etype, title_str, tag, show_legend=False):
         features = ds['features']
@@ -1484,10 +1278,10 @@ def fig0_main_body(ds_ih, ds_ne,
         ax.axhline(0, color='gray', lw=0.5, ls=':')
         _shade(ax, ds)
         _xticks(ax, ds, sparse=True)
-        ax.tick_params(labelsize=FS_TICK)
-        ax.set_xlabel('Time', fontsize=FS_AXIS)
-        ax.set_ylabel(ds['ylabel']['prediction'], fontsize=FS_AXIS)
-        ax.set_title(title_str, fontsize=FS_TITLE, fontweight='bold',
+        ax.tick_params(labelsize=FS_TK)
+        ax.set_xlabel('Time', fontsize=FS_AX)
+        ax.set_ylabel(ds['ylabel']['prediction'], fontsize=FS_AX)
+        ax.set_title(title_str, fontsize=FS_T, fontweight='bold',
                      color=DS_COLOR[tag])
 
         if show_legend:
@@ -1501,34 +1295,31 @@ def fig0_main_body(ds_ih, ds_ne,
                 Line2D([0],[0], color='gray', lw=ID_LW, ls='-',
                        alpha=0.6, label='identity (faded)'),
             ]
-            ax.legend(handles=handles, fontsize=FS_LEGEND - 1,
+            ax.legend(handles=handles, fontsize=FS_LEG,
                       loc='upper left', framealpha=0.9)
 
     # ── Row 1 ─────────────────────────────────────────────────────────────
     _pred_panel(ax_ih_pure, ds_ih, mob_ih, shap_ih, K_id_ih, K_ih,
-                'pure', 'Pure  $m_i \\equiv$ PDP',
-                'ihepc', show_legend=True)
+                'pure',    'Pure  $m_i \\equiv$ PDP',  'ihepc',
+                show_legend=True)
     _pred_panel(ax_ih_part, ds_ih, mob_ih, shap_ih, K_id_ih, K_ih,
-                'partial', 'Partial  $\\phi_i \\equiv$ SHAP',
-                'ihepc')
+                'partial', 'Partial  $\\phi_i \\equiv$ SHAP', 'ihepc')
     _pred_panel(ax_ne_pure, ds_ne, mob_ne, shap_ne, K_id_ne, K_ne,
-                'pure', 'Pure  $m_i \\equiv$ PDP',
-                'neso', show_legend=True)
+                'pure',    'Pure  $m_i \\equiv$ PDP',  'neso',
+                show_legend=True)
     _pred_panel(ax_ne_part, ds_ne, mob_ne, shap_ne, K_id_ne, K_ne,
-                'partial', 'Partial  $\\phi_i \\equiv$ SHAP',
-                'neso')
+                'partial', 'Partial  $\\phi_i \\equiv$ SHAP', 'neso')
 
-    # Row 1 dataset labels
-    ax_ih_pure.text(-0.22, 0.5, 'IHEPC',
+    ax_ih_pure.text(-0.20, 0.5, 'IHEPC',
                     transform=ax_ih_pure.transAxes,
-                    fontsize=FS_AXIS, va='center', ha='right',
+                    fontsize=FS_RLAB, va='center', ha='right',
                     rotation=90, color=DS_COLOR['ihepc'], fontweight='bold')
-    ax_ne_pure.text(-0.22, 0.5, 'NESO',
+    ax_ne_pure.text(-0.20, 0.5, 'NESO',
                     transform=ax_ne_pure.transAxes,
-                    fontsize=FS_AXIS, va='center', ha='right',
+                    fontsize=FS_RLAB, va='center', ha='right',
                     rotation=90, color=DS_COLOR['neso'], fontweight='bold')
 
-    # ── Helper: sensitivity gap panel ────────────────────────────────────
+    # ── Helper: sensitivity gap panel ─────────────────────────────────────
     def _gap_panel(ax, ds, mob_sens, K_corr, tag):
         features = ds['features']
         p, T     = len(features), ds['T']
@@ -1557,83 +1348,81 @@ def fig0_main_body(ds_ih, ds_ne,
         ax.axhline(0, color='gray', lw=0.5, ls=':')
         _shade(ax, ds)
         _xticks(ax, ds, sparse=True)
-        ax.tick_params(labelsize=FS_TICK)
-        ax.set_xlabel('Time', fontsize=FS_AXIS)
-        ax.set_ylabel(ds['ylabel']['sensitivity'], fontsize=FS_AXIS)
+        ax.tick_params(labelsize=FS_TK)
+        ax.set_xlabel('Time', fontsize=FS_AX)
+        ax.set_ylabel(ds['ylabel']['sensitivity'], fontsize=FS_AX)
         integ = float(np.trapz(np.abs(apply_kernel(gap[fi], K_corr)), t_grid))
         ax.set_title(
-            'Sensitivity gap  $\\Delta\\tau_i(t)$  —  {}  —  corr. kernel\n'
+            'Sensitivity gap  —  {}  —  corr. kernel\n'
             'feature: {}    $\\int|\\Delta\\tau_i|\\,dt = {:.3g}$'.format(
                 DS_LABEL[tag].split('\n')[0], features[fi], integ),
-            fontsize=FS_TITLE, fontweight='bold', color=DS_COLOR[tag])
-        ax.legend(fontsize=FS_LEGEND - 1, loc='lower left', framealpha=0.9)
+            fontsize=FS_T - 1, fontweight='bold', color=DS_COLOR[tag])
+        # legend placed below the gap panel axes
+        ax.legend(
+            fontsize=FS_LEG,
+            loc='upper center',
+            bbox_to_anchor=(0.5, -0.24),
+            ncol=2,
+            framealpha=0.85,
+        )
 
-    # ── Row 2 ─────────────────────────────────────────────────────────────
+    # ── Row 2: gap panels ─────────────────────────────────────────────────
     _gap_panel(ax_ih_gap, ds_ih, mob_ih['sensitivity'], K_ih, 'ihepc')
     _gap_panel(ax_ne_gap, ds_ne, mob_ne['sensitivity'], K_ne, 'neso')
 
-    # ── Row 3: 4 network panels ───────────────────────────────────────────
-    net_specs = [
-        (ds_ih, mob_ih, shap_ih, K_ih, 'ihepc', 'sensitivity',
-         'IHEPC — sensitivity\n(partial, corr. kernel)'),
-        (ds_ne, mob_ne, shap_ne, K_ne, 'neso',  'sensitivity',
-         'NESO — sensitivity\n(partial, corr. kernel)'),
-        (ds_ih, mob_ih, shap_ih, K_ih, 'ihepc', 'prediction',
-         'IHEPC — prediction\n(partial, corr. kernel)'),
-        (ds_ne, mob_ne, shap_ne, K_ne, 'neso',  'prediction',
-         'NESO — prediction\n(partial, corr. kernel)'),
+    # ── Row 2: network panels ─────────────────────────────────────────────
+    ih_net_specs = [
+        (ax_net_ih_sens_0, 'sensitivity', 'pure',    'IHEPC sens.\npure'),
+        (ax_net_ih_sens_1, 'sensitivity', 'partial', 'IHEPC sens.\npartial'),
+        (ax_net_ih_pred_0, 'prediction',  'pure',    'IHEPC pred.\npure'),
+        (ax_net_ih_pred_1, 'prediction',  'partial', 'IHEPC pred.\npartial'),
     ]
-    for ax, (ds, mob_d, shap_d, K_corr, tag, gtype, net_title) in \
-            zip(ax_nets, net_specs):
-        features = ds['features']
-        p, T     = len(features), ds['T']
-        mob      = mob_d[gtype]
-        shap     = shap_d[gtype]
+    for ax, gtype, etype, net_title in ih_net_specs:
         node_imp, edge_imp, node_sign = _network_importances(
-            mob, shap, p, T, K_corr, 'partial')
-        _draw_network(ax, features, node_imp, edge_imp,
-                      node_sign, net_title)
+            mob_ih[gtype], shap_ih[gtype],
+            len(ds_ih['features']), ds_ih['T'], K_ih, etype)
+        _draw_network(ax, ds_ih['features'],
+                      node_imp, edge_imp, node_sign, net_title)
 
-    # Shared network legend
-    net_handles = [
-        Line2D([0],[0], color=_EDGE_SYN, lw=3, label='Synergy (+)'),
-        Line2D([0],[0], color=_EDGE_RED, lw=3, label='Redundancy (-)'),
-        plt.Circle((0,0), 0.1, color=_NODE_POS, label='Positive effect'),
-        plt.Circle((0,0), 0.1, color=_NODE_NEG, label='Negative effect'),
+    ne_net_specs = [
+        (ax_net_ne_sens_0, 'sensitivity', 'pure',    'NESO sens.\npure'),
+        (ax_net_ne_sens_1, 'sensitivity', 'partial', 'NESO sens.\npartial'),
+        (ax_net_ne_pred_0, 'prediction',  'pure',    'NESO pred.\npure'),
+        (ax_net_ne_pred_1, 'prediction',  'partial', 'NESO pred.\npartial'),
     ]
-    fig.legend(handles=net_handles, loc='lower center', ncol=4,
-               fontsize=FS_LEGEND - 1, framealpha=0.9,
-               bbox_to_anchor=(0.5, 0.005))
+    for ax, gtype, etype, net_title in ne_net_specs:
+        node_imp, edge_imp, node_sign = _network_importances(
+            mob_ne[gtype], shap_ne[gtype],
+            len(ds_ne['features']), ds_ne['T'], K_ne, etype)
+        _draw_network(ax, ds_ne['features'],
+                      node_imp, edge_imp, node_sign, net_title)
 
-    fig.subplots_adjust(bottom=0.04)
+    # ── Network legend: anchored to the bottom-right network axes ─────────
+    # Place on ax_net_ih_pred_1 (bottom-right of IHEPC block) and
+    # ax_net_ne_pred_1 (bottom-right of NESO block) independently
+    net_handles = [
+        Patch(facecolor=_NODE_POS, edgecolor='none', label='Positive effect'),
+        Patch(facecolor=_NODE_NEG, edgecolor='none', label='Negative effect'),
+    ]
+    for net_ax in (ax_net_ih_pred_1, ax_net_ne_pred_1):
+        net_ax.legend(
+            handles=net_handles,
+            loc='lower center',
+            ncol=2,
+            fontsize=FS_LEG - 1,
+            framealpha=0.9,
+            # place just below the axes box
+            bbox_to_anchor=(0.5, -0.18),
+            bbox_transform=net_ax.transAxes,
+        )
+
     return fig
 
-
 # ===========================================================================
-# 14. Network plot figures
-#
-#   For each dataset: one figure with 2 rows x 3 cols
-#     Rows:    identity kernel (top) | correlation kernel (bottom)
-#     Cols:    pure | partial | full
-#   Node size  = integrated abs individual effect
-#   Edge width = integrated abs pairwise Möbius interaction
-#   Edge color = sign (teal=positive/synergy, red=negative/redundancy)
-#   Node color = FEAT_COLORS
-#   Positive nodes = red fill (effect > 0), negative = blue fill
-#   Game choice: sensitivity (global, most complementary to SPY main body)
-#   Also generates prediction game versions separately.
+# 13. Network helpers
 # ===========================================================================
 
 def _network_importances(mob, shap, p, T, K, effect_type):
-    """
-    Compute node importances and edge weights after kernel application.
-
-    Returns
-    -------
-    node_imp : array (p,)   integrated |effect_i|
-    edge_imp : dict (i,j)->float   integrated m_{ij}, signed
-    node_sign: array (p,)   +1 or -1 based on sign of integral
-    """
     pure_eff = _pure_effects_e(mob, p, T)
     full_eff = _full_effects_e(mob, p, T)
 
@@ -1641,7 +1430,7 @@ def _network_importances(mob, shap, p, T, K, effect_type):
         eff = pure_eff
     elif effect_type == 'partial':
         eff = shap
-    else:  # full
+    else:
         eff = full_eff
 
     t_grid = np.arange(T, dtype=float)
@@ -1655,64 +1444,36 @@ def _network_importances(mob, shap, p, T, K, effect_type):
     edge_imp = {}
     for i in range(p):
         for j in range(i+1, p):
-            raw = mob.get((i, j), np.zeros(T))
+            raw      = mob.get((i, j), np.zeros(T))
             smoothed = apply_kernel(raw, K)
-            val = float(np.trapz(smoothed, t_grid))
+            val      = float(np.trapz(smoothed, t_grid))
             if abs(val) > 0:
                 edge_imp[(i, j)] = val
 
     return node_imp, edge_imp, node_sign
 
 
-# 3-letter abbreviations for network node labels
-FEAT_ABBR = {
-    'day_of_week'   : 'DoW',
-    'is_weekend'    : 'WeD',
-    'month'         : 'Mon',
-    'season'        : 'Sea',
-    'lag_daily_mean': 'LDM',
-    'lag_morning'   : 'LMo',
-    'lag_evening'   : 'LEv',
-}
-
-# Node colours for network plots: teal = positive effect, red = negative
-_NODE_POS = '#2a9d8f'   # teal  – positive integrated effect
-_NODE_NEG = '#e63946'   # red   – negative integrated effect
-_EDGE_SYN = '#2a9d8f'   # teal  – synergy  (positive interaction)
-_EDGE_RED = '#e63946'   # red   – redundancy (negative interaction)
-
-
 def _draw_network(ax, features, node_imp, edge_imp, node_sign, title):
     """
-    Draw one network panel on ax  (Fumagalli et al. style).
-
-    Node fill : teal  if integrated effect > 0, red otherwise
-    Node label: 3-letter abbreviation in a small white inner circle
-    Node size : proportional to integrated |effect|
-    Edge width: proportional to integrated |m_ij|
-    Edge colour: teal = synergy (+), red = redundancy (-)
+    Draw one network panel.
+    Tighter xlim/ylim (±1.32) to reduce inter-cell whitespace.
     """
     import math
 
     p     = len(features)
-    # Start at top (pi/2) and go clockwise so ordering reads naturally
     angle = [math.pi / 2 - 2 * math.pi * i / p for i in range(p)]
     pos   = {i: (math.cos(a), math.sin(a)) for i, a in enumerate(angle)}
 
     ax.set_aspect('equal')
     ax.axis('off')
     if title:
-        ax.set_title(title, fontsize=FS_TITLE, fontweight='bold')
+        ax.set_title(title, fontsize=FS_TITLE, fontweight='bold', pad=4)
 
-    # Normalise node radii
-    max_imp = float(node_imp.max()) if node_imp.max() > 0 else 1.0
-    node_r  = {i: 0.07 + 0.19 * (node_imp[i] / max_imp) for i in range(p)}
-
-    # Normalise edge widths
+    max_imp  = float(node_imp.max()) if node_imp.max() > 0 else 1.0
+    node_r   = {i: 0.07 + 0.19 * (node_imp[i] / max_imp) for i in range(p)}
     max_edge = max((abs(v) for v in edge_imp.values()), default=1.0)
     max_edge = max_edge if max_edge > 0 else 1.0
 
-    # ── Edges (behind nodes) ──────────────────────────────────────────────
     for (i, j), val in edge_imp.items():
         xi, yi = pos[i]
         xj, yj = pos[j]
@@ -1722,116 +1483,34 @@ def _draw_network(ax, features, node_imp, edge_imp, node_sign, title):
         ax.plot([xi, xj], [yi, yj], color=col, lw=lw, alpha=alph,
                 solid_capstyle='round', zorder=1)
 
-    # ── Nodes ─────────────────────────────────────────────────────────────
     for i in range(p):
         x, y = pos[i]
         r    = node_r[i]
         fc   = _NODE_POS if node_sign[i] >= 0 else _NODE_NEG
-
-        # Outer circle (coloured)
         circle = plt.Circle((x, y), r, color=fc, ec='white',
                              linewidth=1.2, zorder=2, alpha=0.88)
         ax.add_patch(circle)
-
-        # Inner white circle
-        r_inner = r * 0.52
-        inner   = plt.Circle((x, y), r_inner, color='white', ec='none',
-                              zorder=3, alpha=0.95)
+        inner = plt.Circle((x, y), r * 0.52, color='white', ec='none',
+                            zorder=3, alpha=0.95)
         ax.add_patch(inner)
-
-        # Abbreviation label inside inner circle
         abbr = FEAT_ABBR.get(features[i], features[i][:3])
-        ax.text(x, y, abbr,
-                ha='center', va='center',
+        ax.text(x, y, abbr, ha='center', va='center',
                 fontsize=max(4.5, r * 22),
                 fontweight='bold', color='#222', zorder=4)
 
-    ax.set_xlim(-1.75, 1.75)
-    ax.set_ylim(-1.75, 1.75)
-
-
-def fig_network_plots(ds, mob_dict, shap_dict, K_corr, game_type='sensitivity'):
-    """
-    2 rows x 3 cols network figure for one dataset and one game.
-    Row 0: identity kernel   -- pure | partial | full
-    Row 1: correlation kernel -- pure | partial | full
-    """
-    tag      = ds['tag']
-    features = ds['features']
-    p        = len(features)
-    T        = ds['T']
-    K_id     = kernel_identity(T)
-
-    mob  = mob_dict[game_type]
-    shap = shap_dict[game_type]
-
-    col_titles = [
-        'Pure  $m_i$  $\\equiv$  {}'.format(
-            'PDP' if game_type == 'prediction' else
-            'Closed Sobol' if game_type == 'sensitivity' else
-            'Pure Risk'),
-        'Partial  $\\phi_i$  $\\equiv$  {}'.format(
-            'SHAP' if game_type == 'prediction' else
-            'Shapley-sensitivity' if game_type == 'sensitivity' else
-            'SAGE'),
-        'Full  $\\Phi_i$  $\\equiv$  {}'.format(
-            'ICE-agg.' if game_type == 'prediction' else
-            'Total Sobol' if game_type == 'sensitivity' else
-            'PFI'),
-    ]
-    row_labels = ['Identity kernel', 'Corr. kernel']
-    kernels    = [K_id, K_corr]
-
-    fig, axes = plt.subplots(
-        2, 3,
-        figsize=(13, 9),
-    )
-    game_label = (
-        'Prediction' if game_type == 'prediction' else
-        'Sensitivity' if game_type == 'sensitivity' else
-        'Risk (MSE)')
-    fig.suptitle(
-        'Network plots — {} game\n{}'.format(
-            game_label,
-            DS_LABEL[tag].replace('\n', '  ')),
-        fontsize=FS_SUPTITLE, fontweight='bold')
-
-    for r, (K, row_lbl) in enumerate(zip(kernels, row_labels)):
-        for c, etype in enumerate(_EFFECT_TYPES_E):
-            ax = axes[r, c]
-            node_imp, edge_imp, node_sign = _network_importances(
-                mob, shap, p, T, K, etype)
-            title = col_titles[c]
-            _draw_network(ax, features, node_imp, edge_imp, node_sign,
-                          title if r == 0 else '')
-            if c == 0:
-                ax.text(-0.05, 0.5, row_lbl,
-                        transform=ax.transAxes,
-                        fontsize=FS_AXIS, va='center', ha='right',
-                        rotation=90, color='#333', fontweight='bold')
-
-    # Legend for edge colours
-    leg_handles = [
-        Line2D([0],[0], color='#2a9d8f', lw=3, label='Synergy (+)'),
-        Line2D([0],[0], color='#e63946', lw=3, label='Redundancy (-)'),
-    ]
-    fig.legend(handles=leg_handles, loc='lower center', ncol=2,
-               fontsize=FS_LEGEND, framealpha=0.9,
-               bbox_to_anchor=(0.5, 0.01))
-
-    plt.tight_layout(rect=[0, 0.04, 1, 0.95])
-    return fig
+    # tight limits: nodes on unit circle, largest node_r ≈ 0.26
+    pad = 0.32
+    ax.set_xlim(-1.0 - pad, 1.0 + pad)
+    ax.set_ylim(-1.0 - pad, 1.0 + pad)
 
 
 def fig_network_appendix(ds, mob_dict, shap_dict, K_corr):
     """
-    Consolidated appendix network figure for one dataset.
-    3 rows x 3 cols:
-      Row 0: prediction game  -- pure | partial | full  (corr. kernel)
-      Row 1: sensitivity game -- pure | partial | full  (corr. kernel)
-      Row 2: risk game        -- pure | partial | full  (corr. kernel)
-    Identity kernel omitted to keep the figure readable;
-    the identity vs corr. contrast is already shown in fig0 and figs 2/3.
+    3 rows x 3 cols — correlation kernel only:
+      Row 0: prediction  -- pure | partial | full
+      Row 1: sensitivity -- pure | partial | full
+      Row 2: risk        -- pure | partial | full
+    Two-entry Patch legend (positive / negative effect).
     """
     tag      = ds['tag']
     features = ds['features']
@@ -1839,20 +1518,32 @@ def fig_network_appendix(ds, mob_dict, shap_dict, K_corr):
     T        = ds['T']
 
     game_specs = [
-        ('prediction',  'Prediction',  'PDP',          'SHAP',               'ICE-agg.'),
-        ('sensitivity', 'Sensitivity', 'Closed Sobol', 'Shapley-sensitivity', 'Total Sobol'),
-        ('risk',        'Risk (MSE)',  'Pure Risk',    'SAGE',                'PFI'),
+        ('prediction',  'Prediction',  'PDP',          'SHAP',                'ICE-agg.'),
+        ('sensitivity', 'Sensitivity', 'Closed Sobol', 'Shapley-sensitivity',  'Total Sobol'),
+        ('risk',        'Risk (MSE)',  'Pure Risk',    'SAGE',                 'PFI'),
     ]
 
-    fig, axes = plt.subplots(3, 3, figsize=(13, 13))
+    fig = plt.figure(figsize=(10, 10))
     fig.suptitle(
         'Network plots — correlation kernel — all games\n'
         '{}'.format(DS_LABEL[tag].replace('\n', '  ')),
-        fontsize=FS_SUPTITLE, fontweight='bold')
+        fontsize=FS_SUPTITLE, fontweight='bold',
+        y=1.01,
+    )
+
+    gs = gridspec.GridSpec(
+        3, 3,
+        figure=fig,
+        hspace=0.08,
+        wspace=0.08,
+        left=0.09, right=0.98,
+        top=0.91, bottom=0.07,
+    )
 
     col_etypes = ['pure', 'partial', 'full']
 
-    for r, (gtype, glabel, lbl_pure, lbl_partial, lbl_full) in enumerate(game_specs):
+    for r, (gtype, glabel, lbl_pure, lbl_partial, lbl_full) in \
+            enumerate(game_specs):
         col_labels = [
             'Pure  $m_i \\equiv$ {}'.format(lbl_pure),
             'Partial  $\\phi_i \\equiv$ {}'.format(lbl_partial),
@@ -1862,35 +1553,34 @@ def fig_network_appendix(ds, mob_dict, shap_dict, K_corr):
         shap = shap_dict[gtype]
 
         for c, etype in enumerate(col_etypes):
-            ax = axes[r, c]
+            ax = fig.add_subplot(gs[r, c])
             node_imp, edge_imp, node_sign = _network_importances(
                 mob, shap, p, T, K_corr, etype)
-            title = col_labels[c] if r == 0 else ''
-            _draw_network(ax, features, node_imp, edge_imp, node_sign, title)
-
+            _draw_network(ax, features, node_imp, edge_imp, node_sign,
+                          col_labels[c] if r == 0 else '')
             if c == 0:
-                ax.text(-0.06, 0.5, glabel,
+                ax.text(-0.03, 0.5, glabel,
                         transform=ax.transAxes,
                         fontsize=FS_AXIS, va='center', ha='right',
                         rotation=90, color='#333', fontweight='bold')
 
-    # Legend
     leg_handles = [
-        Line2D([0],[0], color=_EDGE_SYN, lw=3, label='Synergy (+)'),
-        Line2D([0],[0], color=_EDGE_RED, lw=3, label='Redundancy (-)'),
-        plt.Circle((0,0), 0.1, color=_NODE_POS, label='Positive effect'),
-        plt.Circle((0,0), 0.1, color=_NODE_NEG, label='Negative effect'),
+        Patch(facecolor=_NODE_POS, edgecolor='none', label='Positive effect'),
+        Patch(facecolor=_NODE_NEG, edgecolor='none', label='Negative effect'),
     ]
-    fig.legend(handles=leg_handles, loc='lower center', ncol=4,
-               fontsize=FS_LEGEND, framealpha=0.9,
-               bbox_to_anchor=(0.5, 0.005))
-
-    plt.tight_layout(rect=[0.04, 0.04, 1, 0.95])
+    fig.legend(
+        handles=leg_handles,
+        loc='lower center',
+        ncol=2,
+        fontsize=FS_LEGEND,
+        framealpha=0.9,
+        bbox_to_anchor=(0.5, 0.01),
+    )
     return fig
 
 
 # ===========================================================================
-# 15. Run all games / profiles
+# 14. Run all games / profiles
 # ===========================================================================
 
 def run_games(ds, x_primary, y_primary):
@@ -1936,7 +1626,7 @@ def run_profiles(ds, profile_defs):
 
 
 # ===========================================================================
-# 14. Main
+# 15. Main
 # ===========================================================================
 
 if __name__ == '__main__':
@@ -1947,7 +1637,7 @@ if __name__ == '__main__':
 
     _require_dir(BASE_PLOT_DIR)
 
-    # ── 1. Load both datasets ─────────────────────────────────────────────
+    # ── 1. Load data ──────────────────────────────────────────────────────
     print('\n[1] Loading data ...')
     ds_ih = load_ihepc()
     ds_ne = load_neso()
@@ -1968,7 +1658,6 @@ if __name__ == '__main__':
     print('\n[3] Building correlation kernels ...')
     K_ih = kernel_correlation(ds_ih['Y_raw'])
     K_ne = kernel_correlation(ds_ne['Y_raw'])
-    # identity kernels are built inside fig_summary_e and fig_main_effects_ppf_identity
 
     am_ih = (ds_ih['morning'][0] + ds_ih['morning'][1]) // 2
     pm_ih = (ds_ih['evening'][0] + ds_ih['evening'][1]) // 2
@@ -2066,7 +1755,6 @@ if __name__ == '__main__':
     # ── 6. Generate figures ───────────────────────────────────────────────
     print('\n[6] Generating figures ...')
 
-    # Fig 0: main-body summary
     savefig(
         fig0_main_body(ds_ih, ds_ne,
                        mob_ih, shap_ih,
@@ -2074,71 +1762,52 @@ if __name__ == '__main__':
                        K_ih,   K_ne),
         'fig0_main_body.pdf')
 
-    # Fig 1: correlation matrix comparison
     savefig(
         fig_correlation_matrices(ds_ih, ds_ne, K_ih, K_ne),
         'fig1_correlation_matrices.pdf')
 
-    # Fig 2: IHEPC pure/partial/full, identity kernel
     savefig(
         fig_main_effects_ppf_identity(ds_ih, mob_ih, shap_ih),
         'fig2_main_effects_ppf_identity_ihepc.pdf')
 
-    # Fig 3: NESO pure/partial/full, identity kernel
     savefig(
         fig_main_effects_ppf_identity(ds_ne, mob_ne, shap_ne),
         'fig3_main_effects_ppf_identity_neso.pdf')
 
-    # Fig 4: profile comparison, identity vs correlation
     savefig(
         fig_profiles_comparison(
-            ds_ih, prof_ih, ds_ne, prof_ne,
-            K_ih, K_ne),
+            ds_ih, prof_ih, ds_ne, prof_ne, K_ih, K_ne),
         'fig4_profiles_comparison.pdf')
 
-    # Fig 5: IHEPC pure/partial/full, correlation kernel
     savefig(
-        fig_main_effects_ppf(ds_ih, mob_ih, shap_ih, K_ih),
+        fig_main_effects_ppf(ds_ih, mob_ih, shap_ih, K_ih,
+                             legend_on_full=False),
         'fig5_main_effects_ppf_ihepc.pdf')
 
-    # Fig 6: NESO pure/partial/full, correlation kernel
     savefig(
-        fig_main_effects_ppf(ds_ne, mob_ne, shap_ne, K_ne),
+        fig_main_effects_ppf(ds_ne, mob_ne, shap_ne, K_ne,
+                             legend_on_full=True),
         'fig6_main_effects_ppf_neso.pdf')
 
-    # Fig 7: IHEPC sensitivity gap
     savefig(
         fig_sensitivity_gap_e(ds_ih, mob_ih['sensitivity'], K_ih),
         'fig7_sensitivity_gap_ihepc.pdf')
 
-    # Fig 8: NESO sensitivity gap
     savefig(
         fig_sensitivity_gap_e(ds_ne, mob_ne['sensitivity'], K_ne),
         'fig8_sensitivity_gap_neso.pdf')
 
-    # Fig 9: IHEPC summary (identity vs corr, prediction + risk)
-    savefig(
-        fig_summary_e(ds_ih, mob_ih, shap_ih, K_ih),
-        'fig9_summary_ihepc.pdf')
-
-    # Fig 10: NESO summary (identity vs corr, prediction + risk)
-    savefig(
-        fig_summary_e(ds_ne, mob_ne, shap_ne, K_ne),
-        'fig10_summary_neso.pdf')
-
-    # Network appendix -- IHEPC (all 3 games, corr. kernel, 3x3)
     savefig(
         fig_network_appendix(ds_ih, mob_ih, shap_ih, K_ih),
         'fig_network_appendix_ihepc.pdf')
 
-    # Network appendix -- NESO (all 3 games, corr. kernel, 3x3)
     savefig(
         fig_network_appendix(ds_ne, mob_ne, shap_ne, K_ne),
         'fig_network_appendix_neso.pdf')
 
     print('\n' + '=' * 60)
     print('  Done.  Figures in {}/'.format(BASE_PLOT_DIR))
-    print('  fig0_main_body.pdf                -- MAIN BODY')
+    print('  fig0_main_body.pdf')
     print('  fig1_correlation_matrices.pdf')
     print('  fig2_main_effects_ppf_identity_ihepc.pdf')
     print('  fig3_main_effects_ppf_identity_neso.pdf')
@@ -2147,8 +1816,6 @@ if __name__ == '__main__':
     print('  fig6_main_effects_ppf_neso.pdf')
     print('  fig7_sensitivity_gap_ihepc.pdf')
     print('  fig8_sensitivity_gap_neso.pdf')
-    print('  fig9_summary_ihepc.pdf')
-    print('  fig10_summary_neso.pdf')
-    print('  fig_network_appendix_ihepc.pdf  -- 3x3 all games, corr. kernel')
-    print('  fig_network_appendix_neso.pdf   -- 3x3 all games, corr. kernel')
+    print('  fig_network_appendix_ihepc.pdf')
+    print('  fig_network_appendix_neso.pdf')
     print('=' * 60)
