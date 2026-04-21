@@ -45,6 +45,7 @@ FS_TICK      = 14
 FS_LEGEND    = 13
 FS_ANNOT     = 13
 FS_ROW_LABEL = 15
+FS_AGG_TITLE = 19
 
 matplotlib.rcParams.update({
     'font.size':        FS_TICK,
@@ -74,7 +75,7 @@ KC2 = ['#888888', '#2a9d8f', '#E35B1A']
 KC3 = ['#888888', '#3A86C8', '#f4a261']
 
 LS_FEATS    = ['-', '--', ':']
-HATCH_FEATS = ['', '///', 'xxx']
+HATCH_FEATS = ['', '', '']
 
 # ===========================================================================
 # Kernel constructors
@@ -155,7 +156,6 @@ def _shade(ax, lo, hi, color, alpha=0.07):
 
 # ===========================================================================
 # Shared build_figure for figs 1–3
-# Large gap between suptitle and row-0 panels via top + y parameters.
 # ===========================================================================
 
 def build_figure(
@@ -163,6 +163,8 @@ def build_figure(
     wrong_markers=None, phase_bands=None, causal_vline=None,
     day_vlines=None, t_xlim=None, t_xticks=None, t_xticklabels=None,
     annotations=None,
+    legend_loc_col0='upper right',
+    row1_legend_col=0,
 ):
     n_k        = len(kernels)
     feat_names = list(effects.keys())
@@ -170,19 +172,17 @@ def build_figure(
     n_lm       = len(landmarks)
     n_cols_top = max(n_k, n_lm)
 
-    fig = plt.figure(figsize=(5.5 * n_cols_top, 16))
+    fig = plt.figure(figsize=(5.5 * n_cols_top, 18))
 
-    # top=0.82 + suptitle y=0.98 together create a large gap between
-    # the suptitle text and the first row of axes.
     gs = gridspec.GridSpec(
         3, n_cols_top, figure=fig,
-        hspace=0.70, wspace=0.32,
+        hspace=0.72, wspace=0.32,
         left=0.07, right=0.97,
-        top=0.82,       # <-- lots of room at top for suptitle
+        top=0.88,
         bottom=0.05,
     )
     fig.suptitle(title, fontsize=FS_SUPTITLE, fontweight='bold',
-                 y=0.98)  # <-- suptitle sits high above axes
+                 y=0.975)
 
     xl    = t_xlim   or (float(t.min()), float(t.max()))
     xtk   = t_xticks or list(np.arange(
@@ -195,7 +195,7 @@ def build_figure(
         ax     = fig.add_subplot(gs[0, col])
         curves = {fn: apply_kernel(eff, K, dt)
                   for fn, eff in effects.items()}
-        ymax   = max(np.abs(c).max() for c in curves.values()) * 1.30
+        ymax   = max(np.abs(c).max() for c in curves.values()) * 1.55
         ymin   = min(min(c.min() for c in curves.values()) * 1.10,
                      -0.02 * ymax)
 
@@ -224,11 +224,11 @@ def build_figure(
         ax.set_xlabel('Time', fontsize=FS_LABEL)
         if col == 0:
             ax.set_ylabel(r'$f_S(t)$  /  $(Kf_S)(t)$', fontsize=FS_LABEL)
-            ax.legend(fontsize=FS_LEGEND, loc='upper right')
+            ax.legend(fontsize=FS_LEGEND, loc=legend_loc_col0)
         else:
             ax.set_ylabel(r'$(Kf_S)(t)$', fontsize=FS_LABEL)
         if annotations and k_label in annotations:
-            ax.text(0.97, 0.97, annotations[k_label],
+            ax.text(0.97, 0.98, annotations[k_label],
                     transform=ax.transAxes, fontsize=FS_ANNOT,
                     va='top', ha='right',
                     bbox=dict(boxstyle='round,pad=0.35',
@@ -278,6 +278,7 @@ def build_figure(
         _spine(ax)
         if lm_col == 0:
             ax.set_ylabel(r'$(Kf_S)(t_0)$', fontsize=FS_LABEL)
+        if lm_col == row1_legend_col:
             ax.legend(fontsize=FS_LEGEND, loc='upper right')
         if lm_col == n_lm - 1:
             ax.text(1.03, 0.5, 'Time-specific',
@@ -306,7 +307,7 @@ def build_figure(
     ax_agg.set_title(
         'Time-aggregated importance  '
         r'(ranking preserved across kernels)',
-        fontsize=FS_TITLE, pad=12)
+        fontsize=FS_AGG_TITLE, fontweight='bold', pad=12)
     ax_agg.legend(fontsize=FS_LEGEND, ncol=n_k, loc='upper right')
     ax_agg.text(1.01, 0.5, 'Time-aggregated',
                 transform=ax_agg.transAxes, fontsize=FS_ROW_LABEL,
@@ -419,13 +420,14 @@ def make_pricepulse_figure():
         t_xlim=(0, 4),
         t_xticks=[0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
         t_xticklabels=['0','0.5','1','1.5','2','2.5','3','3.5','4'],
+        row1_legend_col=1,
     )
     for ax in fig.axes[:3]:
         ax.axvspan(0.5, 1.0, alpha=0.10, color=C_X1, zorder=0)
     savefig(fig, 'fig2_pricepulse_kernel_guidance.pdf')
 
 # ===========================================================================
-# Fig 3 — Periodic (no annotation boxes)
+# Fig 3 — Periodic
 # ===========================================================================
 
 def make_periodic_figure():
@@ -462,12 +464,12 @@ def make_periodic_figure():
     n_lm       = len(landmarks)
     n_cols     = max(n_k, n_lm)
 
-    fig = plt.figure(figsize=(5.5 * n_cols, 16))
+    fig = plt.figure(figsize=(5.5 * n_cols, 18))
     gs  = gridspec.GridSpec(
         3, n_cols, figure=fig,
-        hspace=0.70, wspace=0.32,
+        hspace=0.72, wspace=0.32,
         left=0.07, right=0.97,
-        top=0.82,       # large gap between suptitle and row 0
+        top=0.88,
         bottom=0.05,
     )
     fig.suptitle(
@@ -478,7 +480,7 @@ def make_periodic_figure():
         '\n'
         r'$\mathbf{x}^*=(0.8,\,0.9)$,  $T=[0,72]$h  |  '
         'Identity | OU | Periodic ($p=24$h, $\\ell=1$)',
-        fontsize=FS_SUPTITLE, fontweight='bold', y=0.98,
+        fontsize=FS_SUPTITLE, fontweight='bold', y=0.975,
     )
 
     xtk   = list(range(0, 73, 12))
@@ -489,7 +491,7 @@ def make_periodic_figure():
         ax     = fig.add_subplot(gs[0, col])
         curves = {fn: apply_kernel(eff, K, dt)
                   for fn, eff in effects.items()}
-        ymax   = max(np.abs(c).max() for c in curves.values()) * 1.30
+        ymax   = max(np.abs(c).max() for c in curves.values()) * 1.55
         ymin   = min(min(c.min() for c in curves.values()) * 1.10,
                      -0.02 * ymax)
         for fname, ke in curves.items():
@@ -508,7 +510,8 @@ def make_periodic_figure():
         ax.set_xlabel('Time', fontsize=FS_LABEL)
         if col == 0:
             ax.set_ylabel(r'$(Kf_S)(t)$', fontsize=FS_LABEL)
-            ax.legend(fontsize=FS_LEGEND, loc='upper right')
+            ax.legend(fontsize=FS_LEGEND, loc='upper right',
+                      bbox_to_anchor=(1.0, 0.82))
         if col == n_k - 1:
             ax.text(1.03, 0.5, 'Time-resolved',
                     transform=ax.transAxes, fontsize=FS_ROW_LABEL,
@@ -572,8 +575,8 @@ def make_periodic_figure():
     ax_agg.tick_params(labelsize=FS_TICK); _spine(ax_agg)
     ax_agg.set_ylabel(r'$\Phi_S = \int(Kf_S)(t)\,dt$',
                       fontsize=FS_LABEL)
-    ax_agg.set_title('Time-aggregated importance', fontsize=FS_TITLE,
-                     pad=12)
+    ax_agg.set_title('Time-aggregated importance',
+                     fontsize=FS_AGG_TITLE, fontweight='bold', pad=12)
     ax_agg.legend(fontsize=FS_LEGEND, ncol=n_k, loc='upper right')
     ax_agg.text(1.01, 0.5, 'Time-aggregated',
                 transform=ax_agg.transAxes, fontsize=FS_ROW_LABEL,
@@ -657,21 +660,18 @@ def make_ranking_summary():
         for k_idx, (k_label, K, k_color) in enumerate(ex_kernels):
             vals = [time_aggregated(effects[fn], K, ex_dt)
                     for fn in feat_names]
-            for fi, (fn, v) in enumerate(zip(feat_names, vals)):
-                ax.bar(x_pos[fi] + offsets[k_idx], v,
-                       width=bar_w * 0.92,
-                       color=k_color,
-                       hatch=HATCH_FEATS[fi],
-                       edgecolor='white', linewidth=0.3,
-                       alpha=0.88,
-                       label=(k_label if fi == 0 else '_'))
+            ax.bar(x_pos + offsets[k_idx], vals,
+                   width=bar_w * 0.92,
+                   color=k_color,
+                   alpha=0.88,
+                   label=k_label)
 
         ax.set_xticks(x_pos)
         ax.set_xticklabels(feat_names, fontsize=FS_LABEL)
         ax.axhline(0, color='gray', lw=0.6, ls=':')
         ax.tick_params(labelsize=FS_TICK); _spine(ax)
         ax.set_ylabel(r'$\Phi_S$', fontsize=FS_LABEL)
-        ax.set_title(ex_title, fontsize=FS_TITLE, fontweight='bold',
+        ax.set_title(ex_title, fontsize=FS_AGG_TITLE, fontweight='bold',
                      pad=12)
         ax.legend(fontsize=FS_LEGEND, loc='upper right')
 
@@ -690,13 +690,6 @@ def make_ranking_summary():
 # ===========================================================================
 
 def make_condensed_figure():
-    """
-    3 rows × 3 columns
-      Row 0: time-resolved      color=kernel, ls=feature
-      Row 1: time-specific      color=kernel, hatch=feature, WIDE bars
-      Row 2: time-aggregated    color=kernel, hatch=feature, WIDE bars
-                                (identical bar style to row 1)
-    """
     MU = 0.5
 
     # ------------------------------------------------------------------
@@ -712,7 +705,12 @@ def make_condensed_figure():
     K1_id, K1_ou, K1_corr = (kernel_identity(t1),
                               kernel_ou(t1, ell=4.0),
                               kernel_correlation_icu(t1))
-    lm1 = [(5.0, '$t{=}5$h'), (10.0, '$t{=}10$h'), (22.0, '$t{=}22$h')]
+
+    # FIX: all landmark labels fully inside \mathbf{} so LaTeX renders
+    # them bold throughout — no mixed math/text boldness issue
+    lm1 = [(5.0,  r'$\mathbf{t{=}5\,h}$'),
+            (10.0, r'$\mathbf{t{=}10\,h}$'),
+            (22.0, r'$\mathbf{t{=}22\,h}$')]
 
     T2, TP2 = 4.0, 480
     t2  = np.linspace(0, T2, TP2); dt2 = t2[1] - t2[0]
@@ -724,8 +722,11 @@ def make_condensed_figure():
     K2_id, K2_caus, K2_gaus = (kernel_identity(t2),
                                 kernel_causal(t2, ell=0.33),
                                 kernel_gaussian(t2, sigma=0.3))
-    lm2 = [(0.3, '$t{=}0.3$h'), (0.75, '$t{=}0.75$h'),
-           (1.5, '$t{=}1.5$h')]
+
+    # FIX: same treatment for price-pulse landmarks
+    lm2 = [(0.3,  r'$\mathbf{t{=}0.3\,h}$'),
+            (0.75, r'$\mathbf{t{=}0.75\,h}$'),
+            (1.5,  r'$\mathbf{t{=}1.5\,h}$')]
 
     T3, TP3 = 72.0, 720
     t3  = np.linspace(0, T3, TP3); dt3 = t3[1] - t3[0]
@@ -736,8 +737,12 @@ def make_condensed_figure():
     K3_id, K3_ou, K3_per = (kernel_identity(t3),
                              kernel_ou(t3, ell=4.0),
                              kernel_periodic(t3, 24.0, 1.0))
-    lm3 = [(20.0, 'Day 1\n8pm'), (32.0, 'Day 2\n8am'),
-           (44.0, 'Day 2\n8pm')]
+
+    # FIX: periodic landmarks are plain text (no math mode) so
+    # fontweight='bold' on ax.text applies uniformly
+    lm3 = [(20.0, 'Day 1\n8pm'),
+            (32.0, 'Day 2\n8am'),
+            (44.0, 'Day 2\n8pm')]
 
     kernels1 = [('Identity',    K1_id,   KC1[0]),
                 ('OU',          K1_ou,   KC1[1]),
@@ -756,17 +761,18 @@ def make_condensed_figure():
     fig.suptitle(
         'Kernel guidance: time-resolved, time-specific, and '
         'time-aggregated attribution',
-        fontsize=FS_SUPTITLE + 2, fontweight='bold', y=0.995,
+        fontsize=FS_SUPTITLE + 2, fontweight='bold', y=1.01,
     )
     gs = gridspec.GridSpec(
         3, 3, figure=fig,
         hspace=0.52, wspace=0.32,
         left=0.06, right=0.95,
-        top=0.95, bottom=0.05,
+        top=0.94,
+        bottom=0.05,
     )
 
     # ------------------------------------------------------------------
-    # draw_resolved  — color=kernel, ls=feature
+    # draw_resolved
     # ------------------------------------------------------------------
     def draw_resolved(ax, t, dt, effects, kernels_info,
                       xlim, xticks, xticklabels,
@@ -804,8 +810,7 @@ def make_condensed_figure():
         ax.set_ylabel(r'$(Kf_S)(t)$', fontsize=FS_LABEL)
 
     # ------------------------------------------------------------------
-    # draw_specific  — color=kernel, hatch=feature, WIDE bars
-    # bar_w = 0.90/n_k fills ~90 % of each feature slot
+    # draw_specific
     # ------------------------------------------------------------------
     def draw_specific(ax, t, dt, effects, kernels_info, landmarks,
                       wrong_markers=None):
@@ -813,8 +818,12 @@ def make_condensed_figure():
         n_feats       = len(feat_names)
         n_k           = len(kernels_info)
         n_lm          = len(landmarks)
-        bar_w         = 0.90 / n_k   # wide bars
-        gap           = n_feats + 1.4
+
+        bar_w         = 0.28
+        group_width   = n_k * bar_w
+        feat_spacing  = group_width + 0.15
+        lm_gap        = 0.6
+
         group_offsets = np.linspace(
             -(n_k - 1) / 2, (n_k - 1) / 2, n_k
         ) * bar_w
@@ -830,20 +839,25 @@ def make_condensed_figure():
 
         xtick_pos, xtick_labels = [], []
 
+        origins = []
+        feat_xs = []
+        for lm_idx in range(n_lm):
+            x_origin = lm_idx * (n_feats * feat_spacing + lm_gap)
+            origins.append(x_origin)
+            feat_xs.append(np.array([x_origin + fi * feat_spacing
+                                      for fi in range(n_feats)]))
+
         for lm_idx, (lm_t, lm_label) in enumerate(landmarks):
-            idx      = np.argmin(np.abs(t - lm_t))
-            x_origin = lm_idx * (n_feats + gap)
-            feat_x   = np.arange(n_feats, dtype=float) + x_origin
+            idx    = np.argmin(np.abs(t - lm_t))
+            feat_x = feat_xs[lm_idx]
 
             for k_idx, (kl, K, kc) in enumerate(kernels_info):
                 vals = [apply_kernel(effects[fn], K, dt)[idx]
                         for fn in feat_names]
                 for fi, (fn, v) in enumerate(zip(feat_names, vals)):
                     ax.bar(feat_x[fi] + group_offsets[k_idx], v,
-                           width=bar_w * 0.94,   # nearly touching
+                           width=bar_w * 0.92,
                            color=kc,
-                           hatch=HATCH_FEATS[fi],
-                           edgecolor='white', linewidth=0.3,
                            alpha=0.88,
                            label=(kl if (lm_idx == 0 and fi == 0)
                                   else '_'))
@@ -858,14 +872,23 @@ def make_condensed_figure():
                                 ms=10, mew=2.5, zorder=10,
                                 clip_on=False)
 
-            ax.text(x_origin + (n_feats - 1) / 2, ymax * 0.98,
+            block_centre = feat_x[0] + (n_feats - 1) / 2 * feat_spacing
+            # fontweight='bold' works for plain text; for math-mode
+            # strings the label itself uses \mathbf{} (see lm1/lm2)
+            ax.text(block_centre, ymax * 0.98,
                     lm_label, ha='center', va='top',
                     fontsize=FS_TICK, fontweight='bold',
                     color='#333333')
 
             if lm_idx < n_lm - 1:
-                ax.axvline(x_origin + n_feats - 1 + gap / 2,
-                           color='#cccccc', lw=1.0, ls='-')
+                right_edge = (feat_xs[lm_idx][-1]
+                              + group_offsets[-1]
+                              + bar_w * 0.92 / 2)
+                left_edge  = (feat_xs[lm_idx + 1][0]
+                              + group_offsets[0]
+                              - bar_w * 0.92 / 2)
+                divider_x  = (right_edge + left_edge) / 2
+                ax.axvline(divider_x, color='#cccccc', lw=1.0, ls='-')
 
             for fi, fn in enumerate(feat_names):
                 xtick_pos.append(feat_x[fi])
@@ -878,32 +901,29 @@ def make_condensed_figure():
         ax.tick_params(labelsize=FS_TICK)
         _spine(ax)
         ax.set_ylabel(r'$(Kf_S)(t_0)$', fontsize=FS_LABEL)
+        ax.set_title('Time-specific',
+                     fontsize=FS_AGG_TITLE, fontweight='bold', pad=12)
 
     # ------------------------------------------------------------------
-    # draw_aggregated — IDENTICAL bar style to draw_specific
-    # color=kernel, hatch=feature, WIDE bars (bar_w = 0.90/n_k)
+    # draw_aggregated
     # ------------------------------------------------------------------
     def draw_aggregated(ax, effects, kernels_info, dt):
         feat_names = list(effects.keys())
-        n_feats    = len(feat_names)
         n_k        = len(kernels_info)
-        bar_w      = 0.90 / n_k     # same wide bars as draw_specific
+        bar_w      = 0.90 / n_k
         offsets    = np.linspace(
             -(n_k - 1) / 2, (n_k - 1) / 2, n_k
         ) * bar_w
-        x_pos      = np.arange(n_feats)
+        x_pos      = np.arange(len(feat_names))
 
         for k_idx, (kl, K, kc) in enumerate(kernels_info):
             vals = [time_aggregated(effects[fn], K, dt)
                     for fn in feat_names]
-            for fi, (fn, v) in enumerate(zip(feat_names, vals)):
-                ax.bar(x_pos[fi] + offsets[k_idx], v,
-                       width=bar_w * 0.94,   # same as draw_specific
-                       color=kc,
-                       hatch=HATCH_FEATS[fi],   # hatch = feature
-                       edgecolor='white', linewidth=0.3,
-                       alpha=0.88,
-                       label=(kl if fi == 0 else '_'))
+            ax.bar(x_pos + offsets[k_idx], vals,
+                   width=bar_w * 0.94,
+                   color=kc,
+                   alpha=0.88,
+                   label=kl)
 
         ax.set_xticks(x_pos)
         ax.set_xticklabels(feat_names, fontsize=FS_LABEL)
@@ -929,21 +949,9 @@ def make_condensed_figure():
                 lw=2.2, label=fl))
         return handles
 
-    def make_bar_handles(feat_labels, kernels_info):
-        """
-        Shared legend for row 1 and row 2:
-        color patch per kernel + hatch patch per feature.
-        """
-        handles = []
-        for kl, _, kc in kernels_info:
-            handles.append(mpatches.Patch(
-                facecolor=kc, alpha=0.88, label=kl))
-        handles.append(mlines.Line2D([], [], color='none', label=''))
-        for fi, fl in enumerate(feat_labels):
-            handles.append(mpatches.Patch(
-                facecolor='#cccccc', hatch=HATCH_FEATS[fi],
-                edgecolor='#333333', label=fl))
-        return handles
+    def make_bar_handles(kernels_info):
+        return [mpatches.Patch(facecolor=kc, alpha=0.88, label=kl)
+                for kl, _, kc in kernels_info]
 
     # ==================================================================
     # Col 0 — ICU
@@ -965,17 +973,15 @@ def make_condensed_figure():
 
     ax_s1 = fig.add_subplot(gs[1, 0])
     draw_specific(ax_s1, t1, dt1, eff1, kernels1, lm1)
-    ax_s1.legend(
-        handles=make_bar_handles(['X1', 'X2', 'X3'], kernels1),
-        fontsize=FS_LEGEND, loc='center right', framealpha=0.88)
+    ax_s1.legend(handles=make_bar_handles(kernels1),
+                 fontsize=FS_LEGEND, loc='center left', framealpha=0.88)
 
     ax_a1 = fig.add_subplot(gs[2, 0])
     draw_aggregated(ax_a1, eff1, kernels1, dt1)
-    ax_a1.set_title('Time-aggregated', fontsize=FS_TITLE, pad=12)
-    # override legend to show full bar handles
-    ax_a1.legend(
-        handles=make_bar_handles(['X1', 'X2', 'X3'], kernels1),
-        fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+    ax_a1.set_title('Time-aggregated',
+                    fontsize=FS_AGG_TITLE, fontweight='bold', pad=12)
+    ax_a1.legend(handles=make_bar_handles(kernels1),
+                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
 
     # ==================================================================
     # Col 1 — Price Pulse
@@ -1000,16 +1006,15 @@ def make_condensed_figure():
 
     ax_s2 = fig.add_subplot(gs[1, 1])
     draw_specific(ax_s2, t2, dt2, eff2, kernels2, lm2)
-    ax_s2.legend(
-        handles=make_bar_handles(['X1', 'X2', 'X3'], kernels2),
-        fontsize=FS_LEGEND, loc='center left', framealpha=0.88)
+    ax_s2.legend(handles=make_bar_handles(kernels2),
+                 fontsize=FS_LEGEND, loc='center left', framealpha=0.88)
 
     ax_a2 = fig.add_subplot(gs[2, 1])
     draw_aggregated(ax_a2, eff2, kernels2, dt2)
-    ax_a2.set_title('Time-aggregated', fontsize=FS_TITLE, pad=12)
-    ax_a2.legend(
-        handles=make_bar_handles(['X1', 'X2', 'X3'], kernels2),
-        fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+    ax_a2.set_title('Time-aggregated',
+                    fontsize=FS_AGG_TITLE, fontweight='bold', pad=12)
+    ax_a2.legend(handles=make_bar_handles(kernels2),
+                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
 
     # ==================================================================
     # Col 2 — Periodic
@@ -1041,16 +1046,15 @@ def make_condensed_figure():
     ax_s3 = fig.add_subplot(gs[1, 2])
     draw_specific(ax_s3, t3, dt3, eff3, kernels3, lm3,
                   wrong_markers=[('Periodic', 'X2', 44.0)])
-    ax_s3.legend(
-        handles=make_bar_handles(['X1', 'X2'], kernels3),
-        fontsize=FS_LEGEND, loc='center right', framealpha=0.88)
+    ax_s3.legend(handles=make_bar_handles(kernels3),
+                 fontsize=FS_LEGEND, loc='center right', framealpha=0.88)
 
     ax_a3 = fig.add_subplot(gs[2, 2])
     draw_aggregated(ax_a3, eff3, kernels3, dt3)
-    ax_a3.set_title('Time-aggregated', fontsize=FS_TITLE, pad=12)
-    ax_a3.legend(
-        handles=make_bar_handles(['X1', 'X2'], kernels3),
-        fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+    ax_a3.set_title('Time-aggregated',
+                    fontsize=FS_AGG_TITLE, fontweight='bold', pad=12)
+    ax_a3.legend(handles=make_bar_handles(kernels3),
+                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
 
     # ------------------------------------------------------------------
     # Row labels on right edge
