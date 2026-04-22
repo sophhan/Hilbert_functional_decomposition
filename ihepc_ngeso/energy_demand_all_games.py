@@ -1093,36 +1093,23 @@ def fig0_main_body(ds_ih, ds_ne,
                    mob_ih, shap_ih,
                    mob_ne, shap_ne,
                    K_ih,   K_ne):
-    """
-    Layout (3 rows):
-      Row 0 (compact, centred): correlation heatmaps + AM row-slices
-      Row 1 (tall):             pure + partial prediction curves, both datasets
-      Row 2 (wide):             [IHEPC gap | IHEPC nets (2x2)] [NESO gap | NESO nets (2x2)]
-    """
     fig = plt.figure(figsize=(22, 13))
 
-    # ── Outer grid: 3 rows ────────────────────────────────────────────────
     gs_outer = GridSpec(
         3, 1, figure=fig,
-        height_ratios=[0.72, 1.55, 1.95],
-        hspace=0.52,          # increased gap between row1 and row2
+        height_ratios=[0.72, 1.10, 1.50],
+        hspace=0.52,
         top=0.91, bottom=0.07,
         left=0.05, right=0.98,
     )
 
     # ── Row 0: centred heatmaps + row-slices ─────────────────────────────
     gs0_wrap = GridSpecFromSubplotSpec(
-        1, 3,
-        subplot_spec=gs_outer[0],
-        width_ratios=[0.06, 1.0, 0.06],
-        wspace=0.0,
-    )
+        1, 3, subplot_spec=gs_outer[0],
+        width_ratios=[0.06, 1.0, 0.06], wspace=0.0)
     gs0_inner = GridSpecFromSubplotSpec(
-        1, 4,
-        subplot_spec=gs0_wrap[1],
-        wspace=0.35,
-        width_ratios=[1, 1.4, 1, 1.4],
-    )
+        1, 4, subplot_spec=gs0_wrap[1],
+        wspace=0.35, width_ratios=[1, 1.4, 1, 1.4])
     ax_ih_heat = fig.add_subplot(gs0_inner[0])
     ax_ih_row  = fig.add_subplot(gs0_inner[1])
     ax_ne_heat = fig.add_subplot(gs0_inner[2])
@@ -1130,61 +1117,42 @@ def fig0_main_body(ds_ih, ds_ne,
 
     # ── Row 1: prediction panels ──────────────────────────────────────────
     gs1 = GridSpecFromSubplotSpec(
-        1, 4,
-        subplot_spec=gs_outer[1],
-        wspace=0.32,
-    )
+        1, 4, subplot_spec=gs_outer[1], wspace=0.32)
     ax_ih_pure = fig.add_subplot(gs1[0])
     ax_ih_part = fig.add_subplot(gs1[1])
     ax_ne_pure = fig.add_subplot(gs1[2])
     ax_ne_part = fig.add_subplot(gs1[3])
 
-    # ── Row 2: [IHEPC gap | IHEPC nets] [NESO gap | NESO nets] ──────────
+    # ── Row 2: [IHEPC gap | IHEPC nets (2x2)] [NESO gap | NESO nets (2x2)]
     gs2 = GridSpecFromSubplotSpec(
-        1, 2,
-        subplot_spec=gs_outer[2],
-        wspace=0.22,
-    )
+        1, 2, subplot_spec=gs_outer[2], wspace=0.22)
 
-    # IHEPC half: gap panel + 2x2 networks
     gs2_ih = GridSpecFromSubplotSpec(
-        1, 2,
-        subplot_spec=gs2[0],
-        wspace=0.30,
-        width_ratios=[1.1, 1.0],
-    )
+        1, 2, subplot_spec=gs2[0],
+        wspace=0.30, width_ratios=[1.1, 1.0])
     ax_ih_gap = fig.add_subplot(gs2_ih[0])
+    # increased hspace to prevent overlap between network rows
     gs2_ih_nets = GridSpecFromSubplotSpec(
-        2, 2,
-        subplot_spec=gs2_ih[1],
-        hspace=0.08,
-        wspace=0.08,
-    )
+        2, 2, subplot_spec=gs2_ih[1],
+        hspace=0.45, wspace=0.08)
     ax_net_ih_sens_0 = fig.add_subplot(gs2_ih_nets[0, 0])
     ax_net_ih_sens_1 = fig.add_subplot(gs2_ih_nets[0, 1])
     ax_net_ih_pred_0 = fig.add_subplot(gs2_ih_nets[1, 0])
     ax_net_ih_pred_1 = fig.add_subplot(gs2_ih_nets[1, 1])
 
-    # NESO half: gap panel + 2x2 networks
     gs2_ne = GridSpecFromSubplotSpec(
-        1, 2,
-        subplot_spec=gs2[1],
-        wspace=0.30,
-        width_ratios=[1.1, 1.0],
-    )
+        1, 2, subplot_spec=gs2[1],
+        wspace=0.30, width_ratios=[1.1, 1.0])
     ax_ne_gap = fig.add_subplot(gs2_ne[0])
     gs2_ne_nets = GridSpecFromSubplotSpec(
-        2, 2,
-        subplot_spec=gs2_ne[1],
-        hspace=0.08,
-        wspace=0.08,
-    )
+        2, 2, subplot_spec=gs2_ne[1],
+        hspace=0.45, wspace=0.08)
     ax_net_ne_sens_0 = fig.add_subplot(gs2_ne_nets[0, 0])
     ax_net_ne_sens_1 = fig.add_subplot(gs2_ne_nets[0, 1])
     ax_net_ne_pred_0 = fig.add_subplot(gs2_ne_nets[1, 0])
     ax_net_ne_pred_1 = fig.add_subplot(gs2_ne_nets[1, 1])
 
-    # ── Font sizes (enlarged for fig0) ───────────────────────────────────
+    # ── Font sizes ────────────────────────────────────────────────────────
     FS_SUP  = 15
     FS_T    = 13
     FS_AX   = 11.5
@@ -1197,7 +1165,7 @@ def fig0_main_body(ds_ih, ds_ne,
         'UCI IHEPC (single household, kW)  vs  NESO GB Demand (national grid, MW)',
         fontsize=FS_SUP, fontweight='bold', y=0.975)
 
-    ID_ALPHA, ID_LW = 0.25, 1.1
+    ID_ALPHA, ID_LW = 0.45, 1.8
     MX_LW           = 2.4
     K_id_ih = kernel_identity(ds_ih['T'])
     K_id_ne = kernel_identity(ds_ne['T'])
@@ -1306,9 +1274,18 @@ def fig0_main_body(ds_ih, ds_ne,
                 'partial', 'Partial  $\\phi_i \\equiv$ SHAP', 'ihepc')
     _pred_panel(ax_ne_pure, ds_ne, mob_ne, shap_ne, K_id_ne, K_ne,
                 'pure',    'Pure  $m_i \\equiv$ PDP',  'neso',
-                show_legend=True)
+                show_legend=False)
     _pred_panel(ax_ne_part, ds_ne, mob_ne, shap_ne, K_id_ne, K_ne,
-                'partial', 'Partial  $\\phi_i \\equiv$ SHAP', 'neso')
+                'partial', 'Partial  $\\phi_i \\equiv$ SHAP', 'neso',
+                show_legend=True)
+
+    # Align y-axes within each dataset (col0+col1 share scale; col2+col3 share scale)
+    for ax_a, ax_b in [(ax_ih_pure, ax_ih_part),
+                       (ax_ne_pure, ax_ne_part)]:
+        ymin = min(ax_a.get_ylim()[0], ax_b.get_ylim()[0])
+        ymax = max(ax_a.get_ylim()[1], ax_b.get_ylim()[1])
+        ax_a.set_ylim(ymin, ymax)
+        ax_b.set_ylim(ymin, ymax)
 
     ax_ih_pure.text(-0.20, 0.5, 'IHEPC',
                     transform=ax_ih_pure.transAxes,
@@ -1357,7 +1334,21 @@ def fig0_main_body(ds_ih, ds_ne,
             'feature: {}    $\\int|\\Delta\\tau_i|\\,dt = {:.3g}$'.format(
                 DS_LABEL[tag].split('\n')[0], features[fi], integ),
             fontsize=FS_T - 1, fontweight='bold', color=DS_COLOR[tag])
-        # legend placed below the gap panel axes
+
+        # Shrink the axes box upward so the below-legend bottom aligns
+        # with the network panel legend bottom.
+        # We reduce the bottom of the axes in figure-relative terms by
+        # squeezing the axes height from below using set_position.
+        box = ax.get_position()
+        # Reserve ~18% of the axes height at the bottom for the legend
+        shrink = 0.18
+        ax.set_position([
+            box.x0,
+            box.y0 + box.height * shrink,
+            box.width,
+            box.height * (1.0 - shrink),
+        ])
+
         ax.legend(
             fontsize=FS_LEG,
             loc='upper center',
@@ -1371,11 +1362,17 @@ def fig0_main_body(ds_ih, ds_ne,
     _gap_panel(ax_ne_gap, ds_ne, mob_ne['sensitivity'], K_ne, 'neso')
 
     # ── Row 2: network panels ─────────────────────────────────────────────
+    # kernel label appended to title: (corr) for correlation, (id) for identity
+    # here all network panels use the correlation kernel
     ih_net_specs = [
-        (ax_net_ih_sens_0, 'sensitivity', 'pure',    'IHEPC sens.\npure'),
-        (ax_net_ih_sens_1, 'sensitivity', 'partial', 'IHEPC sens.\npartial'),
-        (ax_net_ih_pred_0, 'prediction',  'pure',    'IHEPC pred.\npure'),
-        (ax_net_ih_pred_1, 'prediction',  'partial', 'IHEPC pred.\npartial'),
+        (ax_net_ih_sens_0, 'sensitivity', 'pure',
+         'IHEPC sens. pure\n(corr)'),
+        (ax_net_ih_sens_1, 'sensitivity', 'partial',
+         'IHEPC sens. partial\n(corr)'),
+        (ax_net_ih_pred_0, 'prediction',  'pure',
+         'IHEPC pred. pure\n(corr)'),
+        (ax_net_ih_pred_1, 'prediction',  'partial',
+         'IHEPC pred. partial\n(corr)'),
     ]
     for ax, gtype, etype, net_title in ih_net_specs:
         node_imp, edge_imp, node_sign = _network_importances(
@@ -1385,10 +1382,14 @@ def fig0_main_body(ds_ih, ds_ne,
                       node_imp, edge_imp, node_sign, net_title)
 
     ne_net_specs = [
-        (ax_net_ne_sens_0, 'sensitivity', 'pure',    'NESO sens.\npure'),
-        (ax_net_ne_sens_1, 'sensitivity', 'partial', 'NESO sens.\npartial'),
-        (ax_net_ne_pred_0, 'prediction',  'pure',    'NESO pred.\npure'),
-        (ax_net_ne_pred_1, 'prediction',  'partial', 'NESO pred.\npartial'),
+        (ax_net_ne_sens_0, 'sensitivity', 'pure',
+         'NESO sens. pure\n(corr)'),
+        (ax_net_ne_sens_1, 'sensitivity', 'partial',
+         'NESO sens. partial\n(corr)'),
+        (ax_net_ne_pred_0, 'prediction',  'pure',
+         'NESO pred. pure\n(corr)'),
+        (ax_net_ne_pred_1, 'prediction',  'partial',
+         'NESO pred. partial\n(corr)'),
     ]
     for ax, gtype, etype, net_title in ne_net_specs:
         node_imp, edge_imp, node_sign = _network_importances(
@@ -1397,9 +1398,7 @@ def fig0_main_body(ds_ih, ds_ne,
         _draw_network(ax, ds_ne['features'],
                       node_imp, edge_imp, node_sign, net_title)
 
-    # ── Network legend: anchored to the bottom-right network axes ─────────
-    # Place on ax_net_ih_pred_1 (bottom-right of IHEPC block) and
-    # ax_net_ne_pred_1 (bottom-right of NESO block) independently
+    # ── Network legend: one per dataset block, on the bottom-right panel ──
     net_handles = [
         Patch(facecolor=_NODE_POS, edgecolor='none', label='Positive effect'),
         Patch(facecolor=_NODE_NEG, edgecolor='none', label='Negative effect'),
@@ -1411,8 +1410,7 @@ def fig0_main_body(ds_ih, ds_ne,
             ncol=2,
             fontsize=FS_LEG - 1,
             framealpha=0.9,
-            # place just below the axes box
-            bbox_to_anchor=(0.5, -0.18),
+            bbox_to_anchor=(0.5, -0.22),
             bbox_transform=net_ax.transAxes,
         )
 
@@ -1451,7 +1449,6 @@ def _network_importances(mob, shap, p, T, K, effect_type):
                 edge_imp[(i, j)] = val
 
     return node_imp, edge_imp, node_sign
-
 
 def _draw_network(ax, features, node_imp, edge_imp, node_sign, title):
     """

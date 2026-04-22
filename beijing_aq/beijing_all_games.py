@@ -58,12 +58,8 @@ Figures
 -------
   fig0_main_body.pdf             -- MAIN BODY: 1x3 compact
   fig1_diurnal_and_correlation.pdf
-  fig2_main_effects_onset.pdf    -- onset day, identity kernel, all games
-  fig3_onset_kernel_comparison.pdf
-  fig4_profiles_comparison.pdf   -- identity vs OU, 3 profiles
   figA1_ppf_identity_onset.pdf   -- APPENDIX: pure/partial/full, id kernel
   figA2_kernel_all_features.pdf  -- APPENDIX: 5 kernels x top features
-  figA3_profiles_identity_ou.pdf -- APPENDIX: profiles, id vs OU
   figA4_network_all_games.pdf    -- APPENDIX: network plots, id kernel
 """
 
@@ -78,6 +74,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 from matplotlib.lines import Line2D
+import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
@@ -549,8 +546,10 @@ def _draw_network_bj(ax, pnames, node_imp, edge_imp, node_sign, title):
                 fontsize=max(4.5, r * 22),
                 fontweight='bold', color='#222', zorder=4)
 
-    ax.set_xlim(-1.75, 1.75)
-    ax.set_ylim(-1.75, 1.75)
+    # tight limits matching doc38: nodes on unit circle, max node_r≈0.26
+    pad = 0.32
+    ax.set_xlim(-1.0 - pad, 1.0 + pad)
+    ax.set_ylim(-1.0 - pad, 1.0 + pad)
 
 
 def _network_importances_bj(mob, shap, p, K, effect_type):
@@ -588,7 +587,8 @@ def _network_importances_bj(mob, shap, p, K, effect_type):
 #           identity / OU / correlation on one set of axes
 # ===========================================================================
 
-def fig0_main_body(diurnal, Y_raw, K_corr, mob_onset, shap_onset, pnames):
+def fig0_main_body(diurnal, Y_raw, K_corr, mob_onset, shap_onset,
+                   pnames, prof_results=None):
     p      = len(pnames)
     K_id   = kernel_identity(t_grid)
     K_ou   = kernel_ou(t_grid, 4.0)
@@ -596,13 +596,13 @@ def fig0_main_body(diurnal, Y_raw, K_corr, mob_onset, shap_onset, pnames):
 
     fig, axes = plt.subplots(
         1, 3,
-        figsize=(14, 4.5),
-        gridspec_kw={'wspace': 0.38, 'width_ratios': [1.1, 1.3, 1.3]})
+        figsize=(26, 3.6),
+        gridspec_kw={'wspace': 0.30, 'width_ratios': [1.1, 1.3, 1.3]})
 
     fig.suptitle(
         'Beijing PM2.5 — heating onset day: time-heterogeneous feature effects '
         'and kernel choice',
-        fontsize=FS_SUPTITLE, fontweight='bold', y=1.01)
+        fontsize=FS_SUPTITLE, fontweight='bold', y=1.04)
 
     # ── Col 0: diurnal curve + inset heatmap ─────────────────────────────
     ax = axes[0]
@@ -616,47 +616,34 @@ def fig0_main_body(diurnal, Y_raw, K_corr, mob_onset, shap_onset, pnames):
     ax.set_title('Mean diurnal PM2.5\n({} days)'.format(len(Y_raw)),
                  fontsize=FS_TITLE, fontweight='bold')
     ax.tick_params(labelsize=FS_TICK)
-    tmax = int(np.argmax(pm25_diurnal))
-    tmin = int(np.argmin(pm25_diurnal))
-    ax.annotate('Max {:.0f}'.format(pm25_diurnal[tmax]),
-                xy=(tmax, pm25_diurnal[tmax]),
-                xytext=(tmax - 5, pm25_diurnal[tmax] + 4),
-                fontsize=7, color='#8B0000',
-                arrowprops=dict(arrowstyle='->', color='#8B0000', lw=0.8))
-    ax.annotate('Min {:.0f}'.format(pm25_diurnal[tmin]),
-                xy=(tmin, pm25_diurnal[tmin]),
-                xytext=(tmin + 2, pm25_diurnal[tmin] - 8),
-                fontsize=7, color='steelblue',
-                arrowprops=dict(arrowstyle='->', color='steelblue', lw=0.8))
 
-    # Inset: correlation heatmap
-    ax_ins = ax.inset_axes([0.55, 0.48, 0.43, 0.50])
+    # Inset: correlation heatmap — bottom-left, slightly smaller
+    ax_ins = ax.inset_axes([0.01, 0.01, 0.38, 0.44])
     tick_i = list(range(0, T, 6))
     im = ax_ins.imshow(K_corr, aspect='auto', origin='upper',
                        cmap='RdBu_r', vmin=-0.2, vmax=1.0)
     ax_ins.set_xticks(tick_i)
     ax_ins.set_xticklabels([HOUR_LABELS[i] for i in tick_i],
-                           rotation=45, ha='right', fontsize=4)
+                           rotation=45, ha='right', fontsize=3.5)
     ax_ins.set_yticks(tick_i)
-    ax_ins.set_yticklabels([HOUR_LABELS[i] for i in tick_i], fontsize=4)
-    ax_ins.set_title('Corr. kernel $K(t,s)$', fontsize=5.5,
+    ax_ins.set_yticklabels([HOUR_LABELS[i] for i in tick_i], fontsize=3.5)
+    ax_ins.set_title('Corr. kernel $K(t,s)$', fontsize=5.0,
                      fontweight='bold', pad=2)
     plt.colorbar(im, ax=ax_ins, fraction=0.08, pad=0.02).ax.tick_params(
-        labelsize=4)
+        labelsize=3.5)
 
-    # ── Col 1: onset SHAP, identity kernel ───────────────────────────────
+    # ── Col 1: Shapley values (partial effects), identity kernel ─────────
     ax = axes[1]
-    # Top-4 by identity-kernel partial importance, always include lag and heating
     fi_heat = pnames.index('is_heating')
-    imps = {i: float(np.sum(np.abs(apply_kernel(shap_onset['prediction'][i], K_id))))
+
+    imps = {i: float(np.sum(np.abs(shap_onset['prediction'][i])))
             for i in range(p)}
     top4 = sorted(imps, key=imps.get, reverse=True)[:4]
     if fi_heat not in top4:
         top4 = sorted(imps, key=imps.get, reverse=True)[:3] + [fi_heat]
 
     for fi in top4:
-        curve = apply_kernel(shap_onset['prediction'][fi], K_id)
-        ax.plot(t_grid, curve,
+        ax.plot(t_grid, shap_onset['prediction'][fi],
                 color=FEAT_COLORS[pnames[fi]], lw=2.2,
                 label=pnames[fi])
 
@@ -666,50 +653,39 @@ def fig0_main_body(diurnal, Y_raw, K_corr, mob_onset, shap_onset, pnames):
     ax.tick_params(labelsize=FS_TICK)
     ax.set_ylabel(GAME_YLABEL['prediction'], fontsize=FS_AXIS)
     ax.set_xlabel('Hour', fontsize=FS_AXIS)
-    ax.set_title('Onset day SHAP  (identity kernel)\nPrediction game',
+    ax.set_title('Onset day — Shapley $\\phi_i(t)$  (identity kernel)\n'
+                 'Prediction game',
                  fontsize=FS_TITLE, fontweight='bold')
     ax.legend(fontsize=FS_LEGEND - 0.5, loc='upper right', ncol=2)
 
-    # Annotate sign reversal for lag_pm25_mean
-    raw_lag = mob_onset['prediction'].get((fi_lag,), np.zeros(T))
-    signs   = np.sign(raw_lag)
-    crossings = np.where(np.diff(signs) != 0)[0]
-    if len(crossings) > 0:
-        tc = crossings[0]
-        ax.axvline(tc, color='#d62728', lw=1.2, ls='--', alpha=0.7)
-        ax.text(tc + 0.3, ax.get_ylim()[1] * 0.6,
-                'sign\nreversal\n(lag PM2.5)',
-                fontsize=6.5, color='#d62728',
-                bbox=dict(boxstyle='round,pad=0.2', fc='#fff3f3',
-                          ec='#d62728', alpha=0.9))
-
-    # ── Col 2: kernel comparison for lag_pm25_mean ────────────────────────
+    # ── Col 2: Shapley values for lag_pm25_mean under 3 kernels ──────────
     ax = axes[2]
-    raw_lag = mob_onset['prediction'].get((fi_lag,), np.zeros(T))
+    shap_lag = shap_onset['prediction'][fi_lag]
     kernels_3 = [
-        ('Identity',      K_id,    '#333333', '-'),
-        ('OU $\\ell=4$h', K_ou,    '#1f77b4', '--'),
-        ('Correlation\n(negative ex.)', K_corr, '#2a9d8f', '-.'),
+        ('Identity (unweighted)', K_id,    '#333333', '-'),
+        ('OU $\\ell=4$h',         K_ou,    '#1f77b4', '--'),
+        ('Correlation (erases reversal)', K_corr, '#2a9d8f', '-.'),
     ]
     for kname, K, kcol, ls in kernels_3:
-        ax.plot(t_grid, apply_kernel(raw_lag, K),
+        ax.plot(t_grid, apply_kernel(shap_lag, K),
                 color=kcol, lw=2.2, ls=ls, label=kname)
+
     ax.axhline(0, color='gray', lw=0.5, ls=':')
     _phase_shade(ax)
     _set_time_axis(ax)
     ax.tick_params(labelsize=FS_TICK)
     ax.set_ylabel(GAME_YLABEL['prediction'], fontsize=FS_AXIS)
     ax.set_xlabel('Hour', fontsize=FS_AXIS)
-    ax.set_title('Kernel comparison — lag\\_pm25\\_mean\nOnset day, prediction game',
+    ax.set_title('lag_pm25_mean — Shapley $\\phi_i(t)$ under 3 kernels\n'
+                 'Onset day, prediction game',
                  fontsize=FS_TITLE, fontweight='bold')
-    ax.legend(fontsize=FS_LEGEND - 0.5, loc='lower right')
+    ax.legend(fontsize=FS_LEGEND - 0.5, loc='lower left')
 
-    # Annotate erased sign reversal for correlation
-    ax.text(0.67, 0.12, 'sign reversal\nerased',
-            transform=ax.transAxes, fontsize=6.5, ha='center',
-            color='#2a9d8f',
-            bbox=dict(boxstyle='round,pad=0.2', fc='#f0fafa',
-                      ec='#2a9d8f', alpha=0.9))
+    # Shared y-axis cols 1 and 2
+    y1_min, y1_max = axes[1].get_ylim()
+    y2_min, y2_max = axes[2].get_ylim()
+    axes[1].set_ylim(min(y1_min, y2_min), max(y1_max, y2_max))
+    axes[2].set_ylim(min(y1_min, y2_min), max(y1_max, y2_max))
 
     plt.tight_layout()
     return fig
@@ -737,18 +713,6 @@ def fig_diurnal_and_correlation(diurnal, Y_raw, K_corr):
     ax.set_title('Mean diurnal PM2.5\n({} days)'.format(len(Y_raw)),
                  fontsize=FS_TITLE, fontweight='bold')
     ax.tick_params(labelsize=FS_TICK)
-    tmin = int(np.argmin(pm25_diurnal))
-    tmax = int(np.argmax(pm25_diurnal))
-    ax.annotate('Min\n{:.0f}'.format(pm25_diurnal[tmin]),
-                xy=(tmin, pm25_diurnal[tmin]),
-                xytext=(tmin + 2, pm25_diurnal[tmin] - 8),
-                fontsize=7, color='steelblue',
-                arrowprops=dict(arrowstyle='->', color='steelblue', lw=1.0))
-    ax.annotate('Max\n{:.0f}'.format(pm25_diurnal[tmax]),
-                xy=(tmax, pm25_diurnal[tmax]),
-                xytext=(tmax - 4, pm25_diurnal[tmax] + 5),
-                fontsize=7, color='#8B0000',
-                arrowprops=dict(arrowstyle='->', color='#8B0000', lw=1.0))
 
     ax2 = axes[1]
     tick_i   = list(range(0, T, 4))
@@ -765,20 +729,6 @@ def fig_diurnal_and_correlation(diurnal, Y_raw, K_corr):
                   fontsize=FS_TITLE, fontweight='bold')
     plt.colorbar(im, ax=ax2, fraction=0.046, pad=0.04).ax.tick_params(
         labelsize=6)
-    for (r0, r1), (c0, c1), ec, lbl in [
-        (OVERNIGHT, OVERNIGHT, '#555555', 'ON×ON'),
-        (MORNING,   MORNING,   '#4a90e2', 'AM×AM'),
-        (OVERNIGHT, MORNING,   '#9b59b6', 'ON×AM'),
-        (MORNING,   OVERNIGHT, '#9b59b6', ''),
-    ]:
-        rect = plt.Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0,
-                              linewidth=1.2, edgecolor=ec,
-                              facecolor='none', zorder=3)
-        ax2.add_patch(rect)
-        if lbl:
-            ax2.text((c0 + c1) / 2, (r0 + r1) / 2, lbl,
-                     fontsize=5.5, ha='center', va='center',
-                     color=ec, fontweight='bold')
 
     ax3 = axes[2]
     ov_mid = (OVERNIGHT[0] + OVERNIGHT[1]) // 2
@@ -797,216 +747,14 @@ def fig_diurnal_and_correlation(diurnal, Y_raw, K_corr):
                   fontsize=FS_TITLE, fontweight='bold')
     ax3.legend(fontsize=FS_LEGEND)
     ax3.tick_params(labelsize=FS_TICK)
-    ax3.annotate(
-        'ON high-corr\nwith morning\n(stagnation regime)',
-        xy=(mo_mid, K_corr[ov_mid, mo_mid]),
-        xytext=(mo_mid + 3, K_corr[ov_mid, mo_mid] + 0.07),
-        fontsize=7, color='#9b59b6',
-        arrowprops=dict(arrowstyle='->', color='#9b59b6', lw=1.0))
 
     plt.tight_layout()
     return fig
 
 
-# ===========================================================================
-# 11. Figure 2 -- Main effects onset day, identity kernel, all 3 games
-# ===========================================================================
-
-def fig_main_effects_onset(mob, shap, pnames):
-    K_id   = kernel_identity(t_grid)
-    p      = len(pnames)
-    fi_lag = pnames.index('lag_pm25_mean')
-    fi_heat = pnames.index('is_heating')
-
-    top_auto = _top_k(mob['prediction'], p, k=6)
-    top6 = top_auto if fi_heat in top_auto else top_auto[:5] + [fi_heat]
-
-    fig, axes = plt.subplots(
-        3, 1, figsize=(9, 11),
-        gridspec_kw={'hspace': 0.45})
-    fig.suptitle(
-        'Main effects $m_i(t)$ — Identity kernel (pointwise SHAP)\n'
-        'Beijing US Embassy — heating season onset day (November)\n'
-        'Sign reversal in lag\\_pm25\\_mean reveals time-heterogeneous effects',
-        fontsize=FS_SUPTITLE, fontweight='bold')
-
-    for r, gtype in enumerate(['prediction', 'sensitivity', 'risk']):
-        m  = mob[gtype]
-        ax = axes[r]
-        for fi in top6:
-            curve = apply_kernel(m[(fi,)], K_id)
-            ax.plot(t_grid, curve,
-                    color=FEAT_COLORS[pnames[fi]], lw=2.2,
-                    label=pnames[fi])
-        ax.axhline(0, color='gray', lw=0.5, ls=':')
-        _phase_shade(ax)
-        _set_time_axis(ax)
-        ax.tick_params(labelsize=FS_TICK)
-        ax.set_ylabel(GAME_YLABEL[gtype], fontsize=FS_AXIS)
-        ax.set_xlabel('Hour', fontsize=FS_AXIS)
-        ax.text(-0.09, 0.5, GAME_TITLE[gtype],
-                transform=ax.transAxes,
-                fontsize=7.5, va='center', ha='right',
-                rotation=90, color='#333')
-        if r == 0:
-            ax.legend(fontsize=FS_LEGEND, loc='upper right', ncol=2)
-            raw = m.get((fi_lag,), np.zeros(T))
-            signs = np.sign(raw)
-            crossings = np.where(np.diff(signs) != 0)[0]
-            if len(crossings) > 0:
-                tc = crossings[0]
-                ax.axvline(tc, color='#d62728', lw=1.0, ls='--', alpha=0.7)
-                ax.text(tc + 0.3, ax.get_ylim()[1] * 0.85,
-                        'sign\nreversal',
-                        fontsize=6.5, color='#d62728')
-
-    plt.tight_layout(rect=[0.10, 0, 1, 1])
-    return fig
-
 
 # ===========================================================================
-# 12. Figure 3 -- Onset day kernel comparison (5 kernels x 2 features x 2 games)
-# ===========================================================================
-
-def fig_onset_kernel_comparison(mob, pnames, K_corr):
-    fi_lag  = pnames.index('lag_pm25_mean')
-    fi_heat = pnames.index('is_heating')
-
-    features_focus = [
-        ('lag\\_pm25\\_mean', fi_lag,  '#d62728'),
-        ('is\\_heating',      fi_heat, '#ff7f0e'),
-    ]
-    kernels_ordered = [
-        ('Identity\n(pointwise)',       kernel_identity(t_grid), '#333333'),
-        ('OU\n$\\ell=4$h',              kernel_ou(t_grid, 4.0),  '#1f77b4'),
-        ('Gaussian\n$\\ell=4$h',        kernel_gaussian(t_grid, 4.0), '#2ca02c'),
-        ('Causal\n$\\ell=4$h',          kernel_causal(t_grid, 4.0),   '#e76f51'),
-        ('Correlation\n(negative ex.)', K_corr,                  '#2a9d8f'),
-    ]
-    game_types = ['prediction', 'risk']
-
-    fig, axes = plt.subplots(
-        len(features_focus) * len(game_types), len(kernels_ordered),
-        figsize=(3.4 * len(kernels_ordered),
-                 3.2 * len(features_focus) * len(game_types)),
-        gridspec_kw={'hspace': 0.55, 'wspace': 0.25})
-    fig.suptitle(
-        'Kernel comparison — heating onset day\n'
-        'lag\\_pm25\\_mean (sign-reversing) and is\\_heating\n'
-        'Identity / OU / Gaussian / Causal preserve temporal structure; '
-        'Correlation erases it',
-        fontsize=FS_SUPTITLE, fontweight='bold')
-
-    for fi_row, (fname, fi, fcol) in enumerate(features_focus):
-        for gi, gtype in enumerate(game_types):
-            row = fi_row * len(game_types) + gi
-            raw = mob[gtype].get((fi,), np.zeros(T))
-            for col, (kname, K, kcol) in enumerate(kernels_ordered):
-                ax    = axes[row, col]
-                curve = apply_kernel(raw, K)
-                ax.plot(t_grid, curve, color=kcol, lw=2.2)
-                ax.axhline(0, color='gray', lw=0.5, ls=':')
-                _phase_shade(ax)
-                _set_time_axis(ax, sparse=True)
-                ax.tick_params(axis='y', labelsize=6.5)
-                ax.set_xlabel('Hour', fontsize=6.5)
-                if row == 0:
-                    ax.set_title(kname, fontsize=FS_TITLE,
-                                 fontweight='bold', color=kcol)
-                if col == 0:
-                    ax.set_ylabel(GAME_YLABEL[gtype], fontsize=7.5)
-                    ax.text(-0.38, 0.5,
-                            '{} / {}'.format(fname, gtype[:4]),
-                            transform=ax.transAxes,
-                            fontsize=7, va='center', ha='right',
-                            rotation=90, color=fcol, fontweight='bold')
-                if fi == fi_lag and gtype == 'prediction':
-                    signs = np.sign(curve)
-                    crossings = np.where(np.diff(signs) != 0)[0]
-                    if len(crossings) > 0:
-                        ax.axvline(crossings[0], color='#d62728',
-                                   lw=1.2, ls='--', alpha=0.7)
-                if 'Corr' in kname and fi == fi_lag and gtype == 'prediction':
-                    ax.text(0.5, 0.05, 'sign reversal\nerased',
-                            transform=ax.transAxes, fontsize=6,
-                            ha='center', va='bottom', color='#c0392b',
-                            bbox=dict(boxstyle='round,pad=0.15',
-                                      fc='#ffeaea', ec='#c0392b', alpha=0.9))
-
-    plt.tight_layout(rect=[0.08, 0, 1, 1])
-    return fig
-
-
-# ===========================================================================
-# 13. Figure 4 -- Profile comparison (identity vs OU, 3 profiles)
-# ===========================================================================
-
-def fig_profiles_comparison(prof_results, pnames):
-    K_id = kernel_identity(t_grid)
-    K_ou = kernel_ou(t_grid, 4.0)
-    kernels_rows = [
-        ('Identity kernel',          K_id),
-        ('OU kernel ($\\ell=4$h)',   K_ou),
-    ]
-    p = len(pnames)
-
-    all_mob = {lbl: mob for lbl, (mob, shap) in prof_results.items()}
-    imps = np.zeros(p)
-    for mob in all_mob.values():
-        for i in range(p):
-            imps[i] += float(np.sum(np.abs(mob.get((i,), np.zeros(T)))))
-    fi_heat_idx = pnames.index('is_heating')
-    top6_auto = sorted(range(p), key=lambda i: imps[i], reverse=True)[:6]
-    top6 = top6_auto if fi_heat_idx in top6_auto else top6_auto[:5] + [fi_heat_idx]
-
-    profile_titles = {
-        'Heavy pollution winter':
-            'Heavy pollution\n(winter, heating, low wind)',
-        'Clean summer':
-            'Clean summer\n(Jun-Aug, high wind)',
-        'Heating onset':
-            'Heating onset\n(first heating day, Nov)',
-    }
-
-    fig, axes = plt.subplots(
-        len(kernels_rows), len(prof_results),
-        figsize=(5.0 * len(prof_results), 3.8 * len(kernels_rows)),
-        gridspec_kw={'hspace': 0.50, 'wspace': 0.35})
-    fig.suptitle(
-        'Shapley curves — prediction game\n'
-        'Identity kernel (top) vs OU kernel $\\ell=4$h (bottom)\n'
-        'Beijing US Embassy — three pollution-regime profiles',
-        fontsize=FS_SUPTITLE, fontweight='bold')
-
-    for row, (k_label, K) in enumerate(kernels_rows):
-        for col, (lbl, (mob, shap)) in enumerate(prof_results.items()):
-            ax = axes[row, col]
-            for fi in top6:
-                curve = apply_kernel(shap[fi], K)
-                ax.plot(t_grid, curve,
-                        color=FEAT_COLORS[pnames[fi]],
-                        lw=2.0, label=pnames[fi])
-            ax.axhline(0, color='gray', lw=0.5, ls=':')
-            _phase_shade(ax)
-            _set_time_axis(ax)
-            ax.tick_params(labelsize=FS_TICK)
-            ax.set_xlabel('Hour', fontsize=FS_AXIS)
-            ax.set_title(profile_titles.get(lbl, lbl),
-                         fontsize=FS_TITLE, fontweight='bold')
-            if col == 0:
-                ax.set_ylabel(GAME_YLABEL['prediction'], fontsize=FS_AXIS)
-                ax.text(-0.28, 0.5, k_label,
-                        transform=ax.transAxes,
-                        fontsize=FS_AXIS, va='center', ha='right',
-                        rotation=90, color='#333', fontweight='bold')
-            if col == 0 and row == 0:
-                ax.legend(fontsize=FS_LEGEND - 0.5, loc='upper right')
-
-    return fig
-
-
-# ===========================================================================
-# 14. Figure A1 -- APPENDIX: pure / partial / full, identity kernel, onset day
+# 11. Figure A1 -- APPENDIX: pure / partial / full, identity kernel, onset day
 #     3 rows (games) x 4 cols (pure / partial / full / importance bars)
 # ===========================================================================
 
@@ -1037,14 +785,17 @@ def fig_A1_ppf_identity(mob_onset, shap_onset, pnames):
         top5 = sorted(imps_partial, key=imps_partial.get, reverse=True)[:5]
 
         # ── Curve panels (cols 0-2) ───────────────────────────────────────
+        col0_handles, col0_labels = [], []
         for c, etype in enumerate(_EFFECT_TYPES):
             ax  = axes[r, c]
             eff = effect_dicts[etype]
+            lines = []
             for fi in top5:
                 curve = apply_kernel(eff[fi], K_id)
-                ax.plot(t_grid, curve,
-                        color=FEAT_COLORS[pnames[fi]], lw=2.0,
-                        label=pnames[fi] if c == 0 else '_')
+                ln, = ax.plot(t_grid, curve,
+                              color=FEAT_COLORS[pnames[fi]], lw=2.0,
+                              label=pnames[fi])
+                lines.append(ln)
             ax.axhline(0, color='gray', lw=0.5, ls=':')
             _phase_shade(ax)
             _set_time_axis(ax)
@@ -1054,8 +805,20 @@ def fig_A1_ppf_identity(mob_onset, shap_onset, pnames):
                          fontsize=FS_TITLE, fontweight='bold')
             if c == 0:
                 ax.set_ylabel(GAME_YLABEL[gtype], fontsize=FS_AXIS)
-                ax.legend(fontsize=FS_LEGEND - 0.5,
-                          loc='upper right', framealpha=0.85)
+                col0_handles = lines
+                col0_labels  = [pnames[fi] for fi in top5]
+                if r == 0:
+                    ax.legend(handles=col0_handles, labels=col0_labels,
+                              fontsize=FS_LEGEND - 0.5,
+                              loc='upper right', framealpha=0.85)
+                elif r == 2:
+                    ax.legend(handles=col0_handles, labels=col0_labels,
+                              fontsize=FS_LEGEND - 0.5,
+                              loc='lower right', framealpha=0.85)
+            if c == 1 and r == 1:
+                ax.legend(handles=col0_handles, labels=col0_labels,
+                          fontsize=FS_LEGEND - 0.5,
+                          loc='lower right', framealpha=0.85)
 
         # ── Importance bars (col 3) ───────────────────────────────────────
         ax_bar = axes[r, 3]
@@ -1100,7 +863,6 @@ def fig_A1_ppf_identity(mob_onset, shap_onset, pnames):
 def fig_A2_kernel_all_features(mob_onset, pnames, K_corr):
     p = len(pnames)
     top5 = _top_k(mob_onset['prediction'], p, k=5)
-    # Ensure lag_pm25_mean is included
     fi_lag = pnames.index('lag_pm25_mean')
     if fi_lag not in top5:
         top5 = _top_k(mob_onset['prediction'], p, k=4) + [fi_lag]
@@ -1113,14 +875,25 @@ def fig_A2_kernel_all_features(mob_onset, pnames, K_corr):
         ('Correlation\n(negative ex.)', K_corr,                       '#2a9d8f'),
     ]
 
-    fig, axes = plt.subplots(
-        len(top5), len(kernels_ordered),
-        figsize=(3.2 * len(kernels_ordered), 3.0 * len(top5)),
-        gridspec_kw={'hspace': 0.50, 'wspace': 0.25})
+    n_rows = len(top5)
+    n_cols = len(kernels_ordered)
+
+    fig = plt.figure(figsize=(3.2 * n_cols, 3.0 * n_rows))
+    gs = GridSpec(
+        n_rows, n_cols,
+        figure=fig,
+        hspace=0.50, wspace=0.25,
+        top=0.93, bottom=0.07, left=0.10, right=0.98,
+    )
     fig.suptitle(
         'Kernel comparison — top features — prediction game\n'
         'Beijing US Embassy — heating onset day',
-        fontsize=FS_SUPTITLE, fontweight='bold')
+        fontsize=FS_SUPTITLE, fontweight='bold', y=0.99)
+
+    axes = np.empty((n_rows, n_cols), dtype=object)
+    for r in range(n_rows):
+        for c in range(n_cols):
+            axes[r, c] = fig.add_subplot(gs[r, c])
 
     for ri, fi in enumerate(top5):
         raw = mob_onset['prediction'].get((fi,), np.zeros(T))
@@ -1143,7 +916,6 @@ def fig_A2_kernel_all_features(mob_onset, pnames, K_corr):
                         fontsize=FS_AXIS - 1, va='center', ha='right',
                         rotation=90, color=FEAT_COLORS[pnames[fi]],
                         fontweight='bold')
-            # Mark sign reversals for lag_pm25_mean
             if fi == fi_lag:
                 signs = np.sign(curve)
                 crossings = np.where(np.diff(signs) != 0)[0]
@@ -1151,19 +923,11 @@ def fig_A2_kernel_all_features(mob_onset, pnames, K_corr):
                     ax.axvline(crossings[0], color='#d62728',
                                lw=1.2, ls='--', alpha=0.7)
 
-    plt.tight_layout(rect=[0.07, 0, 1, 1])
     return fig
 
 
 # ===========================================================================
-# 16. Figure A3 -- APPENDIX: profile comparison, identity vs OU
-#     (same as fig4 — produced by fig_profiles_comparison)
-# ===========================================================================
-# No new function needed; fig_profiles_comparison already uses identity+OU.
-
-
-# ===========================================================================
-# 17. Figure A4 -- APPENDIX: network plots, all 3 games, identity kernel
+# 16. Figure A4 -- APPENDIX: network plots, all 3 games, identity kernel
 #     3 rows (games) x 3 cols (pure / partial / full)
 # ===========================================================================
 
@@ -1176,53 +940,48 @@ def fig_A4_network_all_games(mob_onset, shap_onset, pnames):
         ('sensitivity', 'Sensitivity', 'Closed Sobol', 'Shapley-sensitivity', 'Total Sobol'),
         ('risk',        'Risk (MSE)',  'Pure Risk',    'SAGE',                'PFI'),
     ]
-    col_labels_top = [
-        'Pure  $m_i \\equiv$ PDP',
-        'Partial  $\\phi_i \\equiv$ SHAP',
-        'Full  $\\Phi_i \\equiv$ ICE-agg.',
-    ]
 
-    fig, axes = plt.subplots(3, 3, figsize=(12, 12))
+    fig = plt.figure(figsize=(10, 10))
     fig.suptitle(
         'Network plots — Identity kernel — all games\n'
-        'Beijing US Embassy — heating onset day\n'
-        'Node: teal=positive, red=negative integrated effect  '
-        '|  Edge: teal=synergy, red=redundancy',
-        fontsize=FS_SUPTITLE, fontweight='bold')
+        'Beijing US Embassy — heating onset day',
+        fontsize=FS_SUPTITLE, fontweight='bold', y=1.01)
+
+    gs = GridSpec(
+        3, 3,
+        figure=fig,
+        hspace=0.08, wspace=0.08,
+        left=0.09, right=0.98, top=0.91, bottom=0.07,
+    )
+
+    col_titles = ['Pure  $m_i$', 'Partial  $\\phi_i$  (SHAP)', 'Full  $\\Phi_i$']
+    row_labels  = ['Prediction', 'Sensitivity', 'Risk (MSE)']
 
     for r, (gtype, glabel, lp, lpa, lf) in enumerate(game_specs):
-        col_titles = [
-            'Pure  $m_i \\equiv$ {}'.format(lp),
-            'Partial  $\\phi_i \\equiv$ {}'.format(lpa),
-            'Full  $\\Phi_i \\equiv$ {}'.format(lf),
-        ]
         mob  = mob_onset[gtype]
         shap = shap_onset[gtype]
 
         for c, etype in enumerate(_EFFECT_TYPES):
-            ax = axes[r, c]
+            ax = fig.add_subplot(gs[r, c])
             node_imp, edge_imp, node_sign = _network_importances_bj(
                 mob, shap, p, K_id, etype)
             title = col_titles[c] if r == 0 else ''
             _draw_network_bj(ax, pnames, node_imp, edge_imp, node_sign, title)
             if c == 0:
-                ax.text(-0.06, 0.5, glabel,
+                ax.text(-0.03, 0.5, row_labels[r],
                         transform=ax.transAxes,
                         fontsize=FS_AXIS, va='center', ha='right',
                         rotation=90, color='#333', fontweight='bold')
 
-    # Legend
+    # Node-only legend (mpatches) matching doc38 style
     leg_handles = [
-        Line2D([0],[0], color=_EDGE_SYN, lw=3, label='Synergy (+)'),
-        Line2D([0],[0], color=_EDGE_RED, lw=3, label='Redundancy (-)'),
-        plt.Circle((0,0), 0.1, color=_NODE_POS, label='Positive effect'),
-        plt.Circle((0,0), 0.1, color=_NODE_NEG, label='Negative effect'),
+        mpatches.Patch(color=_NODE_POS, label='Positive effect'),
+        mpatches.Patch(color=_NODE_NEG, label='Negative effect'),
     ]
-    fig.legend(handles=leg_handles, loc='lower center', ncol=4,
-               fontsize=FS_LEGEND, framealpha=0.9,
-               bbox_to_anchor=(0.5, 0.005))
+    fig.legend(handles=leg_handles, loc='lower center', ncol=2,
+               fontsize=FS_LEGEND + 1, framealpha=0.9,
+               bbox_to_anchor=(0.5, 0.01))
 
-    plt.tight_layout(rect=[0.04, 0.04, 1, 0.95])
     return fig
 
 
@@ -1346,24 +1105,13 @@ if __name__ == '__main__':
 
     savefig(
         fig0_main_body(diurnal, Y_raw, K_corr,
-                       mob_onset, shap_onset, pnames),
+                       mob_onset, shap_onset, pnames,
+                       prof_results=prof_results),
         'fig0_main_body.pdf')
 
     savefig(
         fig_diurnal_and_correlation(diurnal, Y_raw, K_corr),
         'fig1_diurnal_and_correlation.pdf')
-
-    savefig(
-        fig_main_effects_onset(mob_onset, shap_onset, pnames),
-        'fig2_main_effects_onset.pdf')
-
-    savefig(
-        fig_onset_kernel_comparison(mob_onset, pnames, K_corr),
-        'fig3_onset_kernel_comparison.pdf')
-
-    savefig(
-        fig_profiles_comparison(prof_results, pnames),
-        'fig4_profiles_comparison.pdf')
 
     savefig(
         fig_A1_ppf_identity(mob_onset, shap_onset, pnames),
@@ -1373,12 +1121,6 @@ if __name__ == '__main__':
         fig_A2_kernel_all_features(mob_onset, pnames, K_corr),
         'figA2_kernel_all_features.pdf')
 
-    # figA3 = same as fig4 (identity vs OU profiles) -- already saved above
-    # as fig4_profiles_comparison.pdf; copy under appendix name for clarity
-    savefig(
-        fig_profiles_comparison(prof_results, pnames),
-        'figA3_profiles_identity_ou.pdf')
-
     savefig(
         fig_A4_network_all_games(mob_onset, shap_onset, pnames),
         'figA4_network_all_games.pdf')
@@ -1387,11 +1129,7 @@ if __name__ == '__main__':
     print('  Done.  Figures in {}/'.format(BASE_PLOT_DIR))
     print('  fig0_main_body.pdf            -- MAIN BODY')
     print('  fig1_diurnal_and_correlation.pdf')
-    print('  fig2_main_effects_onset.pdf')
-    print('  fig3_onset_kernel_comparison.pdf')
-    print('  fig4_profiles_comparison.pdf')
     print('  figA1_ppf_identity_onset.pdf  -- APPENDIX: pure/partial/full')
     print('  figA2_kernel_all_features.pdf -- APPENDIX: 5 kernels x features')
-    print('  figA3_profiles_identity_ou.pdf-- APPENDIX: profiles')
     print('  figA4_network_all_games.pdf   -- APPENDIX: networks')
     print('=' * 60)

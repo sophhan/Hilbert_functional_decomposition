@@ -757,18 +757,21 @@ def make_condensed_figure():
     # ------------------------------------------------------------------
     # Figure layout
     # ------------------------------------------------------------------
-    fig = plt.figure(figsize=(24, 20))
+    fig = plt.figure(figsize=(24, 13))
     fig.suptitle(
         'Kernel guidance: time-resolved, time-specific, and '
         'time-aggregated attribution',
         fontsize=FS_SUPTITLE + 2, fontweight='bold', y=1.01,
     )
+
     gs = gridspec.GridSpec(
         3, 3, figure=fig,
-        hspace=0.52, wspace=0.32,
+        hspace=0.38,
+        wspace=0.32,
         left=0.06, right=0.95,
-        top=0.94,
-        bottom=0.05,
+        top=0.92,
+        bottom=0.06,
+        height_ratios=[0.6, 0.4, 0.4]  # ← was [1.0, 0.4, 0.4]
     )
 
     # ------------------------------------------------------------------
@@ -965,11 +968,19 @@ def make_condensed_figure():
         'Example 1 — ICU Early Warning\n'
         r'$X_1 e^{-0.2t}+X_2 e^{-(t-10)^2/2}+X_3 e^{-(t-18)^2/2}$',
         fontsize=FS_TITLE, fontweight='bold', pad=12)
-    ax_r1.legend(
-        handles=make_resolved_handles(
-            ['X1 (baseline)', 'X2 (shock)', 'X3 (detn.)'],
-            kernels1),
-        fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+    kernel_handles1 = [mlines.Line2D([], [], color=kc, lw=2.6, ls='-', label=kl)
+                       for kl, _, kc in kernels1]
+    feat_handles1 = [mlines.Line2D([], [], color='#333333', ls=LS_FEATS[i],
+                                   lw=2.2, label=fl)
+                     for i, fl in enumerate(['X1 (baseline)', 'X2 (shock)', 'X3 (detn.)'])]
+
+    leg_kernels1 = ax_r1.legend(handles=kernel_handles1,
+                                fontsize=FS_LEGEND, loc='upper right',
+                                bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
+    ax_r1.add_artist(leg_kernels1)
+    ax_r1.legend(handles=feat_handles1,
+                 fontsize=FS_LEGEND, loc='upper left',
+                 bbox_to_anchor=(0.0, 0.88), framealpha=0.88)
 
     ax_s1 = fig.add_subplot(gs[1, 0])
     draw_specific(ax_s1, t1, dt1, eff1, kernels1, lm1)
@@ -998,11 +1009,19 @@ def make_condensed_figure():
         'Example 2 — Price Pulse\n'
         r'$X_1\mathbf{1}_{[0.5,1.0)}(t)+X_2 e^{-(t-2)^2/4.5}+X_3$',
         fontsize=FS_TITLE, fontweight='bold', pad=12)
-    ax_r2.legend(
-        handles=make_resolved_handles(
-            ['X1 (pulse)', 'X2 (temp.)', 'X3 (base)'],
-            kernels2),
-        fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+    kernel_handles2 = [mlines.Line2D([], [], color=kc, lw=2.6, ls='-', label=kl)
+                       for kl, _, kc in kernels2]
+    feat_handles2 = [mlines.Line2D([], [], color='#333333', ls=LS_FEATS[i],
+                                   lw=2.2, label=fl)
+                     for i, fl in enumerate(['X1 (pulse)', 'X2 (temp.)', 'X3 (base)'])]
+
+    leg_kernels2 = ax_r2.legend(handles=kernel_handles2,
+                                fontsize=FS_LEGEND, loc='upper right',
+                                bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
+    ax_r2.add_artist(leg_kernels2)
+    ax_r2.legend(handles=feat_handles2,
+                 fontsize=FS_LEGEND, loc='upper center',
+                 bbox_to_anchor=(0.5, 0.88), framealpha=0.88)
 
     ax_s2 = fig.add_subplot(gs[1, 1])
     draw_specific(ax_s2, t2, dt2, eff2, kernels2, lm2)
@@ -1014,7 +1033,7 @@ def make_condensed_figure():
     ax_a2.set_title('Time-aggregated',
                     fontsize=FS_AGG_TITLE, fontweight='bold', pad=12)
     ax_a2.legend(handles=make_bar_handles(kernels2),
-                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+                 fontsize=FS_LEGEND, loc='upper left', framealpha=0.88)
 
     # ==================================================================
     # Col 2 — Periodic
@@ -1036,16 +1055,24 @@ def make_condensed_figure():
     for d, dl in [(12, 'Day 1'), (36, 'Day 2'), (60, 'Day 3')]:
         ax_r3.text(d, ymax3 * 0.97, dl, ha='center', va='top',
                    fontsize=FS_TICK, color='gray', style='italic')
-    ax_r3.legend(
-        handles=make_resolved_handles(
-            ['X1 (8am daily)', 'X2 (8pm day-1)'],
-            kernels3),
-        fontsize=FS_LEGEND, loc='upper right',
-        bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
+    # Kernel handles (right side)
+    kernel_handles = [mlines.Line2D([], [], color=kc, lw=2.6, ls='-', label=kl)
+                      for kl, _, kc in kernels3]
+    # Feature handles (left side)
+    feat_handles = [mlines.Line2D([], [], color='#333333', ls=LS_FEATS[i],
+                                  lw=2.2, label=fl)
+                    for i, fl in enumerate(['X1 (8am daily)', 'X2 (8pm day-1)'])]
+
+    leg_kernels = ax_r3.legend(handles=kernel_handles,
+                               fontsize=FS_LEGEND, loc='upper right',
+                               bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
+    ax_r3.add_artist(leg_kernels)
+    ax_r3.legend(handles=feat_handles,
+                 fontsize=FS_LEGEND, loc='upper center',
+                 bbox_to_anchor=(0.5, 0.88), framealpha=0.88)  # ← loc and anchor changed
 
     ax_s3 = fig.add_subplot(gs[1, 2])
-    draw_specific(ax_s3, t3, dt3, eff3, kernels3, lm3,
-                  wrong_markers=[('Periodic', 'X2', 44.0)])
+    draw_specific(ax_s3, t3, dt3, eff3, kernels3, lm3)
     ax_s3.legend(handles=make_bar_handles(kernels3),
                  fontsize=FS_LEGEND, loc='center right', framealpha=0.88)
 
