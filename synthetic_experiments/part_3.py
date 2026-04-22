@@ -8,6 +8,8 @@ Produces all Part 3 figures:
   fig3_periodic_kernel_guidance.pdf
   fig4_ranking_summary.pdf
   fig5_condensed_kernel_guidance.pdf   — 3×3: resolved / specific / aggregated
+  fig5a_condensed_no_periodic.pdf      — 2×3: ICU + Price Pulse, row-wise
+  fig5b_condensed_no_pricepulse.pdf    — 2×3: ICU + Periodic, row-wise
 
 All computations are analytical (oracle / true model).
 Row-normalised kernel application throughout.
@@ -38,14 +40,14 @@ os.makedirs(PLOT_DIR, exist_ok=True)
 # Global font sizes  — large throughout
 # ---------------------------------------------------------------------------
 
-FS_SUPTITLE  = 20
-FS_TITLE     = 17
-FS_LABEL     = 15
-FS_TICK      = 14
-FS_LEGEND    = 13
-FS_ANNOT     = 13
-FS_ROW_LABEL = 15
-FS_AGG_TITLE = 19
+FS_SUPTITLE  = 22
+FS_TITLE     = 19
+FS_LABEL     = 17
+FS_TICK      = 16
+FS_LEGEND    = 15
+FS_ANNOT     = 15
+FS_ROW_LABEL = 17
+FS_AGG_TITLE = 21
 
 matplotlib.rcParams.update({
     'font.size':        FS_TICK,
@@ -155,7 +157,7 @@ def _shade(ax, lo, hi, color, alpha=0.07):
     ax.axvspan(lo, hi, alpha=alpha, color=color, zorder=0)
 
 # ===========================================================================
-# Shared build_figure for figs 1–3
+# Shared build_figure for figs 1-3
 # ===========================================================================
 
 def build_figure(
@@ -346,7 +348,7 @@ def make_icu_figure():
         'Correlation':
             'Aggregates $t_0$ with times\n'
             'that co-vary across patients\n'
-            '→ phase-aware, no $\\ell$ needed',
+            r'$\rightarrow$ phase-aware, no $\ell$ needed',
     }
     title = (
         'Example 1 — ICU Early Warning  (row-normalised kernel)\n'
@@ -705,9 +707,6 @@ def make_condensed_figure():
     K1_id, K1_ou, K1_corr = (kernel_identity(t1),
                               kernel_ou(t1, ell=4.0),
                               kernel_correlation_icu(t1))
-
-    # FIX: all landmark labels fully inside \mathbf{} so LaTeX renders
-    # them bold throughout — no mixed math/text boldness issue
     lm1 = [(5.0,  r'$\mathbf{t{=}5\,h}$'),
             (10.0, r'$\mathbf{t{=}10\,h}$'),
             (22.0, r'$\mathbf{t{=}22\,h}$')]
@@ -722,8 +721,6 @@ def make_condensed_figure():
     K2_id, K2_caus, K2_gaus = (kernel_identity(t2),
                                 kernel_causal(t2, ell=0.33),
                                 kernel_gaussian(t2, sigma=0.3))
-
-    # FIX: same treatment for price-pulse landmarks
     lm2 = [(0.3,  r'$\mathbf{t{=}0.3\,h}$'),
             (0.75, r'$\mathbf{t{=}0.75\,h}$'),
             (1.5,  r'$\mathbf{t{=}1.5\,h}$')]
@@ -737,9 +734,6 @@ def make_condensed_figure():
     K3_id, K3_ou, K3_per = (kernel_identity(t3),
                              kernel_ou(t3, ell=4.0),
                              kernel_periodic(t3, 24.0, 1.0))
-
-    # FIX: periodic landmarks are plain text (no math mode) so
-    # fontweight='bold' on ax.text applies uniformly
     lm3 = [(20.0, 'Day 1\n8pm'),
             (32.0, 'Day 2\n8am'),
             (44.0, 'Day 2\n8pm')]
@@ -771,7 +765,7 @@ def make_condensed_figure():
         left=0.06, right=0.95,
         top=0.92,
         bottom=0.06,
-        height_ratios=[0.6, 0.4, 0.4]  # ← was [1.0, 0.4, 0.4]
+        height_ratios=[0.6, 0.4, 0.4],
     )
 
     # ------------------------------------------------------------------
@@ -842,11 +836,9 @@ def make_condensed_figure():
 
         xtick_pos, xtick_labels = [], []
 
-        origins = []
         feat_xs = []
         for lm_idx in range(n_lm):
             x_origin = lm_idx * (n_feats * feat_spacing + lm_gap)
-            origins.append(x_origin)
             feat_xs.append(np.array([x_origin + fi * feat_spacing
                                       for fi in range(n_feats)]))
 
@@ -876,8 +868,6 @@ def make_condensed_figure():
                                 clip_on=False)
 
             block_centre = feat_x[0] + (n_feats - 1) / 2 * feat_spacing
-            # fontweight='bold' works for plain text; for math-mode
-            # strings the label itself uses \mathbf{} (see lm1/lm2)
             ax.text(block_centre, ymax * 0.98,
                     lm_label, ha='center', va='top',
                     fontsize=FS_TICK, fontweight='bold',
@@ -940,18 +930,6 @@ def make_condensed_figure():
     # ------------------------------------------------------------------
     # Legend builders
     # ------------------------------------------------------------------
-    def make_resolved_handles(feat_labels, kernels_info):
-        handles = []
-        for kl, _, kc in kernels_info:
-            handles.append(mlines.Line2D(
-                [], [], color=kc, lw=2.6, ls='-', label=kl))
-        handles.append(mlines.Line2D([], [], color='none', label=''))
-        for fi, fl in enumerate(feat_labels):
-            handles.append(mlines.Line2D(
-                [], [], color='#333333', ls=LS_FEATS[fi],
-                lw=2.2, label=fl))
-        return handles
-
     def make_bar_handles(kernels_info):
         return [mpatches.Patch(facecolor=kc, alpha=0.88, label=kl)
                 for kl, _, kc in kernels_info]
@@ -973,7 +951,6 @@ def make_condensed_figure():
     feat_handles1 = [mlines.Line2D([], [], color='#333333', ls=LS_FEATS[i],
                                    lw=2.2, label=fl)
                      for i, fl in enumerate(['X1 (baseline)', 'X2 (shock)', 'X3 (detn.)'])]
-
     leg_kernels1 = ax_r1.legend(handles=kernel_handles1,
                                 fontsize=FS_LEGEND, loc='upper right',
                                 bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
@@ -1014,7 +991,6 @@ def make_condensed_figure():
     feat_handles2 = [mlines.Line2D([], [], color='#333333', ls=LS_FEATS[i],
                                    lw=2.2, label=fl)
                      for i, fl in enumerate(['X1 (pulse)', 'X2 (temp.)', 'X3 (base)'])]
-
     leg_kernels2 = ax_r2.legend(handles=kernel_handles2,
                                 fontsize=FS_LEGEND, loc='upper right',
                                 bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
@@ -1055,21 +1031,18 @@ def make_condensed_figure():
     for d, dl in [(12, 'Day 1'), (36, 'Day 2'), (60, 'Day 3')]:
         ax_r3.text(d, ymax3 * 0.97, dl, ha='center', va='top',
                    fontsize=FS_TICK, color='gray', style='italic')
-    # Kernel handles (right side)
-    kernel_handles = [mlines.Line2D([], [], color=kc, lw=2.6, ls='-', label=kl)
-                      for kl, _, kc in kernels3]
-    # Feature handles (left side)
-    feat_handles = [mlines.Line2D([], [], color='#333333', ls=LS_FEATS[i],
-                                  lw=2.2, label=fl)
-                    for i, fl in enumerate(['X1 (8am daily)', 'X2 (8pm day-1)'])]
-
-    leg_kernels = ax_r3.legend(handles=kernel_handles,
-                               fontsize=FS_LEGEND, loc='upper right',
-                               bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
-    ax_r3.add_artist(leg_kernels)
-    ax_r3.legend(handles=feat_handles,
+    kernel_handles3 = [mlines.Line2D([], [], color=kc, lw=2.6, ls='-', label=kl)
+                       for kl, _, kc in kernels3]
+    feat_handles3 = [mlines.Line2D([], [], color='#333333', ls=LS_FEATS[i],
+                                   lw=2.2, label=fl)
+                     for i, fl in enumerate(['X1 (8am daily)', 'X2 (8pm day-1)'])]
+    leg_kernels3 = ax_r3.legend(handles=kernel_handles3,
+                                fontsize=FS_LEGEND, loc='upper right',
+                                bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
+    ax_r3.add_artist(leg_kernels3)
+    ax_r3.legend(handles=feat_handles3,
                  fontsize=FS_LEGEND, loc='upper center',
-                 bbox_to_anchor=(0.5, 0.88), framealpha=0.88)  # ← loc and anchor changed
+                 bbox_to_anchor=(0.5, 0.88), framealpha=0.88)
 
     ax_s3 = fig.add_subplot(gs[1, 2])
     draw_specific(ax_s3, t3, dt3, eff3, kernels3, lm3)
@@ -1083,9 +1056,7 @@ def make_condensed_figure():
     ax_a3.legend(handles=make_bar_handles(kernels3),
                  fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
 
-    # ------------------------------------------------------------------
     # Row labels on right edge
-    # ------------------------------------------------------------------
     for ax, label in [
         (ax_r3, 'Time-resolved'),
         (ax_s3, 'Time-specific'),
@@ -1097,6 +1068,431 @@ def make_condensed_figure():
 
     savefig(fig, 'fig5_condensed_kernel_guidance.pdf')
 
+
+# ===========================================================================
+# Shared inner helpers for alt condensed figures
+# ===========================================================================
+
+def _draw_resolved_inner(ax, t, dt, effects, kernels_info,
+                         xlim, xticks, xticklabels,
+                         phase_bands=None, day_vlines=None,
+                         causal_vline=None):
+    feat_names = list(effects.keys())
+    curves = {kl: {fn: apply_kernel(eff, K, dt)
+                   for fn, eff in effects.items()}
+              for kl, K, _ in kernels_info}
+    ymax = max(np.abs(c).max()
+               for kd in curves.values()
+               for c in kd.values()) * 1.28
+    ymin = -0.05 * ymax
+    if phase_bands:
+        for lo, hi, pc in phase_bands:
+            ax.axvspan(lo, hi, alpha=0.07, color=pc, zorder=0)
+    if day_vlines:
+        for dv in day_vlines:
+            ax.axvline(dv, color='gray', lw=0.7, ls=':', alpha=0.5)
+    if causal_vline is not None:
+        ax.axvline(causal_vline, color='#aaa', lw=0.8, ls='--', alpha=0.6)
+    for fi, fn in enumerate(feat_names):
+        for kl, K, kc in kernels_info:
+            ax.plot(t, curves[kl][fn], color=kc,
+                    ls=LS_FEATS[fi], lw=2.4, alpha=0.92)
+    ax.axhline(0, color='gray', lw=0.5, ls=':')
+    ax.set_xlim(*xlim)
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(xticklabels, fontsize=FS_TICK)
+    ax.set_ylim(ymin, ymax)
+    ax.tick_params(labelsize=FS_TICK)
+    _spine(ax)
+    ax.set_xlabel('Time', fontsize=FS_LABEL)
+    ax.set_ylabel(r'$(Kf_S)(t)$', fontsize=FS_LABEL)
+
+
+def _draw_specific_inner(ax, t, dt, effects, kernels_info, landmarks,
+                         wrong_markers=None):
+    feat_names   = list(effects.keys())
+    n_feats      = len(feat_names)
+    n_k          = len(kernels_info)
+    n_lm         = len(landmarks)
+    bar_w        = 0.28
+    group_width  = n_k * bar_w
+    feat_spacing = group_width + 0.15
+    lm_gap       = 0.6
+    group_offsets = np.linspace(-(n_k - 1) / 2, (n_k - 1) / 2, n_k) * bar_w
+
+    all_vals = [
+        apply_kernel(effects[fn], K, dt)[np.argmin(np.abs(t - lm_t))]
+        for lm_t, _ in landmarks
+        for _, K, _ in kernels_info
+        for fn in feat_names
+    ]
+    ymax = max(abs(v) for v in all_vals) * 1.38
+
+    feat_xs = []
+    for lm_idx in range(n_lm):
+        x0 = lm_idx * (n_feats * feat_spacing + lm_gap)
+        feat_xs.append(np.array([x0 + fi * feat_spacing
+                                 for fi in range(n_feats)]))
+
+    xtick_pos, xtick_labels = [], []
+
+    for lm_idx, (lm_t, lm_label) in enumerate(landmarks):
+        idx    = np.argmin(np.abs(t - lm_t))
+        feat_x = feat_xs[lm_idx]
+        for k_idx, (kl, K, kc) in enumerate(kernels_info):
+            vals = [apply_kernel(effects[fn], K, dt)[idx]
+                    for fn in feat_names]
+            for fi, v in enumerate(vals):
+                ax.bar(feat_x[fi] + group_offsets[k_idx], v,
+                       width=bar_w * 0.92, color=kc, alpha=0.88,
+                       label=(kl if (lm_idx == 0 and fi == 0) else '_'))
+            if wrong_markers:
+                for wk, wf, wt in wrong_markers:
+                    if wk == kl and abs(lm_t - wt) < 1e-6:
+                        fi = feat_names.index(wf)
+                        ax.plot(feat_x[fi] + group_offsets[k_idx],
+                                vals[fi] + 0.02 * ymax,
+                                marker='x', color='#e63946',
+                                ms=10, mew=2.5, zorder=10, clip_on=False)
+        block_centre = feat_x[0] + (n_feats - 1) / 2 * feat_spacing
+        ax.text(block_centre, ymax * 0.98, lm_label,
+                ha='center', va='top',
+                fontsize=FS_TICK, fontweight='bold', color='#333333')
+        if lm_idx < n_lm - 1:
+            right_edge = (feat_xs[lm_idx][-1]
+                          + group_offsets[-1] + bar_w * 0.92 / 2)
+            left_edge  = (feat_xs[lm_idx + 1][0]
+                          + group_offsets[0]  - bar_w * 0.92 / 2)
+            ax.axvline((right_edge + left_edge) / 2,
+                       color='#cccccc', lw=1.0)
+        for fi, fn in enumerate(feat_names):
+            xtick_pos.append(feat_x[fi])
+            xtick_labels.append(fn)
+
+    ax.set_xticks(xtick_pos)
+    ax.set_xticklabels(xtick_labels, fontsize=FS_TICK)
+    ax.axhline(0, color='gray', lw=0.5, ls=':')
+    ax.set_ylim(-0.08 * ymax, ymax)
+    ax.tick_params(labelsize=FS_TICK)
+    _spine(ax)
+    ax.set_ylabel(r'$(Kf_S)(t_0)$', fontsize=FS_LABEL)
+
+
+def _draw_aggregated_inner(ax, effects, kernels_info, dt):
+    feat_names = list(effects.keys())
+    n_k    = len(kernels_info)
+    bar_w  = 0.90 / n_k
+    offsets = np.linspace(-(n_k - 1) / 2, (n_k - 1) / 2, n_k) * bar_w
+    x_pos  = np.arange(len(feat_names))
+    for k_idx, (kl, K, kc) in enumerate(kernels_info):
+        vals = [time_aggregated(effects[fn], K, dt) for fn in feat_names]
+        ax.bar(x_pos + offsets[k_idx], vals,
+               width=bar_w * 0.94, color=kc, alpha=0.88, label=kl)
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(feat_names, fontsize=FS_LABEL)
+    ax.axhline(0, color='gray', lw=0.6, ls=':')
+    ax.tick_params(labelsize=FS_TICK)
+    _spine(ax)
+    ax.set_ylabel(r'$\Phi_S = \int(Kf_S)(t)\,dt$', fontsize=FS_LABEL)
+
+
+def _make_bar_handles(kernels_info):
+    return [mpatches.Patch(facecolor=kc, alpha=0.88, label=kl)
+            for kl, _, kc in kernels_info]
+
+
+# ===========================================================================
+# Fig 5a — Condensed no-Periodic: ICU + Price Pulse, 2 rows x 3 cols
+# ===========================================================================
+
+def make_condensed_no_periodic():
+    MU = 0.5
+
+    # ── ICU ───────────────────────────────────────────────────────────
+    T1, TP1 = 24.0, 240
+    t1  = np.linspace(0, T1, TP1); dt1 = t1[1] - t1[0]
+    eff1 = {
+        'X1': (0.8 - MU) * np.exp(-0.2 * t1),
+        'X2': (0.9 - MU) * np.exp(-0.5 * (t1 - 10.0) ** 2),
+        'X3': (0.7 - MU) * np.exp(-0.5 * (t1 - 18.0) ** 2),
+    }
+    kernels1 = [('Identity',    kernel_identity(t1),        KC1[0]),
+                ('OU',          kernel_ou(t1, ell=4.0),     KC1[1]),
+                ('Correlation', kernel_correlation_icu(t1), KC1[2])]
+    lm1 = [(5.0,  r'$\mathbf{t{=}5\,h}$'),
+           (10.0, r'$\mathbf{t{=}10\,h}$'),
+           (22.0, r'$\mathbf{t{=}22\,h}$')]
+
+    # ── Price Pulse ───────────────────────────────────────────────────
+    T2, TP2 = 4.0, 480
+    t2  = np.linspace(0, T2, TP2); dt2 = t2[1] - t2[0]
+    eff2 = {
+        'X1': (0.9 - MU) * ((t2 >= 0.5) & (t2 < 1.0)).astype(float),
+        'X2': (0.7 - MU) * np.exp(-0.5 * ((t2 - 2.0) / 1.5) ** 2),
+        'X3': (0.6 - MU) * np.ones_like(t2),
+    }
+    kernels2 = [('Identity',   kernel_identity(t2),             KC2[0]),
+                ('Causal',     kernel_causal(t2, ell=0.33),     KC2[1]),
+                ('Gaussian ✗', kernel_gaussian(t2, sigma=0.3),  KC2[2])]
+    lm2 = [(0.3,  r'$\mathbf{t{=}0.3\,h}$'),
+           (0.75, r'$\mathbf{t{=}0.75\,h}$'),
+           (1.5,  r'$\mathbf{t{=}1.5\,h}$')]
+
+    # ── Figure ────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(26, 14))
+    fig.suptitle(
+        'Kernel guidance: time-resolved, time-specific, and '
+        'time-aggregated attribution\n'
+        'ICU Early Warning  |  Price Pulse Demand Response',
+        fontsize=FS_SUPTITLE + 2, fontweight='bold', y=1.02,
+    )
+    gs = gridspec.GridSpec(
+        2, 3, figure=fig,
+        hspace=0.52, wspace=0.34,
+        left=0.06, right=0.97,
+        top=0.93, bottom=0.07,
+    )
+
+    # ── Row 0: ICU ────────────────────────────────────────────────────
+    ax_r1 = fig.add_subplot(gs[0, 0])
+    _draw_resolved_inner(ax_r1, t1, dt1, eff1, kernels1,
+                         xlim=(0, 24), xticks=list(range(0, 25, 4)),
+                         xticklabels=[str(v) for v in range(0, 25, 4)],
+                         phase_bands=[(8, 12, KC1[1]), (16, 20, KC1[2])])
+    ax_r1.set_title(
+        'ICU Early Warning — time-resolved\n'
+        r'$X_1 e^{-0.2t}+X_2 e^{-(t-10)^2/2}+X_3 e^{-(t-18)^2/2}$',
+        fontsize=FS_TITLE, fontweight='bold', pad=10)
+    k_h1 = [mlines.Line2D([], [], color=kc, lw=2.6, ls='-', label=kl)
+             for kl, _, kc in kernels1]
+    f_h1 = [mlines.Line2D([], [], color='#333', ls=LS_FEATS[i], lw=2.2, label=fl)
+             for i, fl in enumerate(['X1 (baseline)', 'X2 (shock)', 'X3 (detn.)'])]
+    leg_k1 = ax_r1.legend(handles=k_h1, fontsize=FS_LEGEND, loc='upper right',
+                           bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
+    ax_r1.add_artist(leg_k1)
+    ax_r1.legend(handles=f_h1, fontsize=FS_LEGEND, loc='upper left',
+                 bbox_to_anchor=(0.0, 0.88), framealpha=0.88)
+    ax_r1.text(-0.18, 0.5, 'ICU Early Warning',
+               transform=ax_r1.transAxes, fontsize=FS_ROW_LABEL,
+               va='center', ha='right', rotation=90,
+               color=KC1[2], fontweight='bold')
+
+    ax_s1 = fig.add_subplot(gs[0, 1])
+    _draw_specific_inner(ax_s1, t1, dt1, eff1, kernels1, lm1)
+    ax_s1.set_title('ICU Early Warning — time-specific',
+                    fontsize=FS_TITLE, fontweight='bold', pad=10)
+    ax_s1.legend(handles=_make_bar_handles(kernels1),
+                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+
+    ax_a1 = fig.add_subplot(gs[0, 2])
+    _draw_aggregated_inner(ax_a1, eff1, kernels1, dt1)
+    ax_a1.set_title('ICU Early Warning — time-aggregated',
+                    fontsize=FS_TITLE, fontweight='bold', pad=10)
+    ax_a1.legend(handles=_make_bar_handles(kernels1),
+                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+
+    # ── Row 1: Price Pulse ────────────────────────────────────────────
+    ax_r2 = fig.add_subplot(gs[1, 0])
+    _draw_resolved_inner(ax_r2, t2, dt2, eff2, kernels2,
+                         xlim=(0, 4),
+                         xticks=[0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
+                         xticklabels=['0','0.5','1','1.5','2','2.5','3','3.5','4'],
+                         causal_vline=0.5)
+    ax_r2.axvspan(0.5, 1.0, alpha=0.10, color=KC2[0], zorder=0)
+    ax_r2.set_title(
+        'Price Pulse — time-resolved\n'
+        r'$X_1\mathbf{1}_{[0.5,1)}(t)+X_2 e^{-(t-2)^2/4.5}+X_3$',
+        fontsize=FS_TITLE, fontweight='bold', pad=10)
+    k_h2 = [mlines.Line2D([], [], color=kc, lw=2.6, ls='-', label=kl)
+             for kl, _, kc in kernels2]
+    f_h2 = [mlines.Line2D([], [], color='#333', ls=LS_FEATS[i], lw=2.2, label=fl)
+             for i, fl in enumerate(['X1 (pulse)', 'X2 (temp.)', 'X3 (base)'])]
+    leg_k2 = ax_r2.legend(handles=k_h2, fontsize=FS_LEGEND, loc='upper right',
+                           bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
+    ax_r2.add_artist(leg_k2)
+    ax_r2.legend(handles=f_h2, fontsize=FS_LEGEND, loc='upper center',
+                 bbox_to_anchor=(0.5, 0.88), framealpha=0.88)
+    ax_r2.text(-0.18, 0.5, 'Price Pulse',
+               transform=ax_r2.transAxes, fontsize=FS_ROW_LABEL,
+               va='center', ha='right', rotation=90,
+               color=KC2[1], fontweight='bold')
+
+    ax_s2 = fig.add_subplot(gs[1, 1])
+    _draw_specific_inner(ax_s2, t2, dt2, eff2, kernels2, lm2,
+                         wrong_markers=[('Gaussian ✗', 'X1', 0.3)])
+    ax_s2.set_title('Price Pulse — time-specific',
+                    fontsize=FS_TITLE, fontweight='bold', pad=10)
+    ax_s2.legend(handles=_make_bar_handles(kernels2),
+                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+
+    ax_a2 = fig.add_subplot(gs[1, 2])
+    _draw_aggregated_inner(ax_a2, eff2, kernels2, dt2)
+    ax_a2.set_title('Price Pulse — time-aggregated',
+                    fontsize=FS_TITLE, fontweight='bold', pad=10)
+    ax_a2.legend(handles=_make_bar_handles(kernels2),
+                 fontsize=FS_LEGEND, loc='upper left', framealpha=0.88)
+
+    # Column labels
+    for ax, lbl in [(ax_r1, 'Time-resolved'),
+                    (ax_s1, 'Time-specific'),
+                    (ax_a1, 'Time-aggregated')]:
+        ax.text(0.5, 1.13, lbl, transform=ax.transAxes,
+                fontsize=FS_ROW_LABEL + 1, ha='center', va='bottom',
+                fontweight='bold', color='gray')
+
+    savefig(fig, 'fig5a_condensed_no_periodic.pdf')
+
+
+# ===========================================================================
+# Fig 5b — Condensed no-PricePulse: ICU + Periodic, 2 rows x 3 cols
+# ===========================================================================
+
+def make_condensed_no_pricepulse():
+    MU = 0.5
+
+    # ── ICU ───────────────────────────────────────────────────────────
+    T1, TP1 = 24.0, 240
+    t1  = np.linspace(0, T1, TP1); dt1 = t1[1] - t1[0]
+    eff1 = {
+        'X1': (0.8 - MU) * np.exp(-0.2 * t1),
+        'X2': (0.9 - MU) * np.exp(-0.5 * (t1 - 10.0) ** 2),
+        'X3': (0.7 - MU) * np.exp(-0.5 * (t1 - 18.0) ** 2),
+    }
+    kernels1 = [('Identity',    kernel_identity(t1),        KC1[0]),
+                ('OU',          kernel_ou(t1, ell=4.0),     KC1[1]),
+                ('Correlation', kernel_correlation_icu(t1), KC1[2])]
+    lm1 = [(5.0,  r'$\mathbf{t{=}5\,h}$'),
+           (10.0, r'$\mathbf{t{=}10\,h}$'),
+           (22.0, r'$\mathbf{t{=}22\,h}$')]
+
+    # ── Periodic ──────────────────────────────────────────────────────
+    T3, TP3 = 72.0, 720
+    t3  = np.linspace(0, T3, TP3); dt3 = t3[1] - t3[0]
+    eff3 = {
+        'X1': (0.8 - MU) * np.exp(-0.5 * ((t3 % 24 - 8) ** 2) / 4.0),
+        'X2': (0.9 - MU) * np.exp(-0.5 * (t3 - 20.0) ** 2 / 0.5),
+    }
+    kernels3 = [('Identity', kernel_identity(t3),            KC3[0]),
+                ('OU',       kernel_ou(t3, ell=4.0),         KC3[1]),
+                ('Periodic', kernel_periodic(t3, 24.0, 1.0), KC3[2])]
+    lm3 = [(20.0, 'Day 1\n8pm'),
+           (32.0, 'Day 2\n8am'),
+           (44.0, 'Day 2\n8pm')]
+
+    phase_bands3 = [
+        (6, 10, KC3[0]), (18, 22, KC3[0]),
+        (30, 34, KC3[0]), (42, 46, KC3[0]),
+        (54, 58, KC3[0]), (66, 70, KC3[0]),
+    ]
+
+    # ── Figure ────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(26, 14))
+    fig.suptitle(
+        'Kernel guidance: time-resolved, time-specific, and '
+        'time-aggregated attribution\n'
+        'ICU Early Warning  |  Periodic (3-day Medication)',
+        fontsize=FS_SUPTITLE + 2, fontweight='bold', y=1.02,
+    )
+    gs = gridspec.GridSpec(
+        2, 3, figure=fig,
+        hspace=0.52, wspace=0.34,
+        left=0.06, right=0.97,
+        top=0.93, bottom=0.07,
+    )
+
+    # ── Row 0: ICU ────────────────────────────────────────────────────
+    ax_r1 = fig.add_subplot(gs[0, 0])
+    _draw_resolved_inner(ax_r1, t1, dt1, eff1, kernels1,
+                         xlim=(0, 24), xticks=list(range(0, 25, 4)),
+                         xticklabels=[str(v) for v in range(0, 25, 4)],
+                         phase_bands=[(8, 12, KC1[1]), (16, 20, KC1[2])])
+    ax_r1.set_title(
+        'ICU Early Warning — time-resolved\n'
+        r'$X_1 e^{-0.2t}+X_2 e^{-(t-10)^2/2}+X_3 e^{-(t-18)^2/2}$',
+        fontsize=FS_TITLE, fontweight='bold', pad=10)
+    k_h1 = [mlines.Line2D([], [], color=kc, lw=2.6, ls='-', label=kl)
+             for kl, _, kc in kernels1]
+    f_h1 = [mlines.Line2D([], [], color='#333', ls=LS_FEATS[i], lw=2.2, label=fl)
+             for i, fl in enumerate(['X1 (baseline)', 'X2 (shock)', 'X3 (detn.)'])]
+    leg_k1 = ax_r1.legend(handles=k_h1, fontsize=FS_LEGEND, loc='upper right',
+                           bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
+    ax_r1.add_artist(leg_k1)
+    ax_r1.legend(handles=f_h1, fontsize=FS_LEGEND, loc='upper left',
+                 bbox_to_anchor=(0.0, 0.88), framealpha=0.88)
+    ax_r1.text(-0.18, 0.5, 'ICU Early Warning',
+               transform=ax_r1.transAxes, fontsize=FS_ROW_LABEL,
+               va='center', ha='right', rotation=90,
+               color=KC1[2], fontweight='bold')
+
+    ax_s1 = fig.add_subplot(gs[0, 1])
+    _draw_specific_inner(ax_s1, t1, dt1, eff1, kernels1, lm1)
+    ax_s1.set_title('ICU Early Warning — time-specific',
+                    fontsize=FS_TITLE, fontweight='bold', pad=10)
+    ax_s1.legend(handles=_make_bar_handles(kernels1),
+                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+
+    ax_a1 = fig.add_subplot(gs[0, 2])
+    _draw_aggregated_inner(ax_a1, eff1, kernels1, dt1)
+    ax_a1.set_title('ICU Early Warning — time-aggregated',
+                    fontsize=FS_TITLE, fontweight='bold', pad=10)
+    ax_a1.legend(handles=_make_bar_handles(kernels1),
+                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+
+    # ── Row 1: Periodic ───────────────────────────────────────────────
+    ax_r3 = fig.add_subplot(gs[1, 0])
+    _draw_resolved_inner(ax_r3, t3, dt3, eff3, kernels3,
+                         xlim=(0, 72), xticks=list(range(0, 73, 12)),
+                         xticklabels=[f'{v}h' for v in range(0, 73, 12)],
+                         phase_bands=phase_bands3,
+                         day_vlines=[24.0, 48.0])
+    ax_r3.set_title(
+        'Periodic (3-day) — time-resolved\n'
+        r'$X_1$: daily 8am (recurring),  $X_2$: acute 8pm day 1',
+        fontsize=FS_TITLE, fontweight='bold', pad=10)
+    ymax3 = ax_r3.get_ylim()[1]
+    for d, dl in [(12, 'Day 1'), (36, 'Day 2'), (60, 'Day 3')]:
+        ax_r3.text(d, ymax3 * 0.97, dl, ha='center', va='top',
+                   fontsize=FS_TICK, color='gray', style='italic')
+    k_h3 = [mlines.Line2D([], [], color=kc, lw=2.6, ls='-', label=kl)
+             for kl, _, kc in kernels3]
+    f_h3 = [mlines.Line2D([], [], color='#333', ls=LS_FEATS[i], lw=2.2, label=fl)
+             for i, fl in enumerate(['X1 (8am daily)', 'X2 (8pm day-1)'])]
+    leg_k3 = ax_r3.legend(handles=k_h3, fontsize=FS_LEGEND, loc='upper right',
+                           bbox_to_anchor=(1.0, 0.88), framealpha=0.88)
+    ax_r3.add_artist(leg_k3)
+    ax_r3.legend(handles=f_h3, fontsize=FS_LEGEND, loc='upper center',
+                 bbox_to_anchor=(0.5, 0.88), framealpha=0.88)
+    ax_r3.text(-0.18, 0.5, 'Periodic (3-day)',
+               transform=ax_r3.transAxes, fontsize=FS_ROW_LABEL,
+               va='center', ha='right', rotation=90,
+               color=KC3[2], fontweight='bold')
+
+    ax_s3 = fig.add_subplot(gs[1, 1])
+    _draw_specific_inner(ax_s3, t3, dt3, eff3, kernels3, lm3,
+                         wrong_markers=[('Periodic', 'X2', 44.0)])
+    ax_s3.set_title('Periodic (3-day) — time-specific',
+                    fontsize=FS_TITLE, fontweight='bold', pad=10)
+    ax_s3.legend(handles=_make_bar_handles(kernels3),
+                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+
+    ax_a3 = fig.add_subplot(gs[1, 2])
+    _draw_aggregated_inner(ax_a3, eff3, kernels3, dt3)
+    ax_a3.set_title('Periodic (3-day) — time-aggregated',
+                    fontsize=FS_TITLE, fontweight='bold', pad=10)
+    ax_a3.legend(handles=_make_bar_handles(kernels3),
+                 fontsize=FS_LEGEND, loc='upper right', framealpha=0.88)
+
+    # Column labels
+    for ax, lbl in [(ax_r1, 'Time-resolved'),
+                    (ax_s1, 'Time-specific'),
+                    (ax_a1, 'Time-aggregated')]:
+        ax.text(0.5, 1.13, lbl, transform=ax.transAxes,
+                fontsize=FS_ROW_LABEL + 1, ha='center', va='bottom',
+                fontweight='bold', color='gray')
+
+    savefig(fig, 'fig5b_condensed_no_pricepulse.pdf')
+
+
 # ===========================================================================
 # Main
 # ===========================================================================
@@ -1105,9 +1501,11 @@ if __name__ == '__main__':
     print('\n' + '=' * 60)
     print('  Part 3 — Kernel Guidance (full script)')
     print('=' * 60)
-    print('\n[1] ICU ...');              make_icu_figure()
-    print('\n[2] Price Pulse ...');      make_pricepulse_figure()
-    print('\n[3] Periodic ...');         make_periodic_figure()
-    print('\n[4] Ranking summary ...');  make_ranking_summary()
-    print('\n[5] Condensed (3×3) ...'); make_condensed_figure()
+    print('\n[1] ICU ...');                           make_icu_figure()
+    print('\n[2] Price Pulse ...');                   make_pricepulse_figure()
+    print('\n[3] Periodic ...');                      make_periodic_figure()
+    print('\n[4] Ranking summary ...');               make_ranking_summary()
+    print('\n[5] Condensed (3x3) ...');               make_condensed_figure()
+    print('\n[6] Condensed no-Periodic (2x3) ...');   make_condensed_no_periodic()
+    print('\n[7] Condensed no-PricePulse (2x3) ...'); make_condensed_no_pricepulse()
     print(f'\nAll figures saved to {PLOT_DIR}/')

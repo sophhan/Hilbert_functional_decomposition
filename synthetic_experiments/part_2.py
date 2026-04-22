@@ -49,6 +49,17 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker
 
+# ── Global font size defaults ────────────────────────────────────────────
+plt.rcParams.update({
+    'font.size'       : 12,
+    'axes.titlesize'  : 13,
+    'axes.labelsize'  : 12,
+    'xtick.labelsize' : 11,
+    'ytick.labelsize' : 11,
+    'legend.fontsize' : 11,
+    'figure.titlesize': 14,
+})
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -124,21 +135,21 @@ METHOD_LABELS = {
     'mlp':        'MLP',
 }
 METHOD_COLORS = {
-    'oracle': '#888888',
-    'analytical':     '#1b2631',
+    'oracle':     '#888888',
+    'analytical': '#1b2631',
     'ridge':      '#a8dadc',
     'rf':         '#457b9d',
     'mlp':        '#f4a261',
 }
 METHOD_LS = {
-    'analytical': '--',      
+    'analytical': '--',
     'oracle':     (0, (4, 2)),
     'ridge':      ':',
     'rf':         (0, (5, 2)),
     'mlp':        (0, (3, 1)),
 }
 METHOD_LW = {
-    'analytical': 1.2,   
+    'analytical': 1.2,
     'oracle':     1.8,
     'ridge':      1.5,
     'rf':         1.5,
@@ -173,10 +184,9 @@ def analytical_sobol_resolved(t):
 
     Returns dict: j -> (T,) array, values in [0,1], sum to 1 at each t.
     """
-    numerators   = {j: VAR_X * PHI[j](t)**2 for j in FEATURES}
-    denominator  = sum(numerators.values())
-    # avoid division by zero (denominator is > 0 for t in [0,24])
-    denominator  = np.maximum(denominator, 1e-12)
+    numerators  = {j: VAR_X * PHI[j](t)**2 for j in FEATURES}
+    denominator = sum(numerators.values())
+    denominator = np.maximum(denominator, 1e-12)
     return {j: numerators[j] / denominator for j in FEATURES}
 
 
@@ -216,7 +226,7 @@ def generate_training_data(n, t, rng):
 
 
 # ===========================================================================
-# 4.  Model factories  (re-used from Part 1 with minimal changes)
+# 4.  Model factories
 # ===========================================================================
 
 def make_ridge():
@@ -378,19 +388,8 @@ def compute_variance_game(predict_fn, X_bg, t):
     Variance game: v(S)(t) = Var_{X_bg}[ F_S(x)(t) ]
 
     For each coalition S:
-      - Fix features in S to their background values (marginalise out −S)
+      - Fix features in S to their background values (marginalise out -S)
       - Compute variance of predictions over the background sample
-
-    This implements the sensitivity/variance behavior operator:
-      nu_var(S)(t) = Var[F_S(X)(t)]  where X ~ background distribution
-
-    Since we marginalise out X_{-S} by averaging over the background,
-    F_S(x)(t) = E_{X_{-S}}[F(X)|X_S=x_S] estimated by mean over background
-    with X_S fixed to each background row's value.
-
-    More precisely: for each background point x^(i), we fix X_S = x^(i)_S
-    and average over X_{-S} (the rest of the background). The variance
-    of these conditional means over i gives nu_var(S)(t).
 
     Returns dict: subset_tuple -> (T,) array
     """
@@ -405,13 +404,9 @@ def compute_variance_game(predict_fn, X_bg, t):
 
     for S in all_S:
         if len(S) == 0:
-            # v(empty) = Var[E[F(X)]] = 0  (grand mean has zero variance)
             v[()] = np.zeros(len(t))
         else:
             mask = subset_to_mask(S, p)
-            # For each background point i, fix X_S = X_bg[i, S],
-            # marginalise X_{-S} by averaging over full background.
-            # This gives F_S(x^(i))(t) = mean over background with X_S fixed.
             conditional_means = np.zeros((n, len(t)))
             for i in range(n):
                 x_imp = X_bg.copy()
@@ -419,7 +414,6 @@ def compute_variance_game(predict_fn, X_bg, t):
                     if mask[j]:
                         x_imp[:, j] = X_bg[i, j]
                 conditional_means[i] = predict_fn(x_imp).mean(axis=0)
-            # Variance of conditional means = explained variance by S
             v[S] = conditional_means.var(axis=0)
 
     return v
@@ -453,22 +447,13 @@ def sobol_from_mobius_constant_kernel(mobius_dict, t):
     Recover Sobol indices from Mobius coefficients under the constant kernel.
 
     Time-resolved:   S_j(t) = m_{j}(t) / sum_k m_{k}(t)
-      where m_{j}(t) is the Mobius coefficient for singleton {j}
-      (= first-order variance effect)
-
-    Time-aggregated: xi_j = int m_{j}(t) dt / int sum_k m_{k}(t) dt
-
-    Under Theorem 2 (constant kernel, variance behavior, independent inputs),
-    this recovers the classical Sobol indices.
+    Time-aggregated: xi_j   = int m_{j}(t) dt / int sum_k m_{k}(t) dt
 
     Returns:
-      resolved   : dict j -> (T,) array   (time-resolved Sobol index)
-      aggregated : dict j -> float         (time-aggregated Sobol index)
+      resolved   : dict j -> (T,) array
+      aggregated : dict j -> float
     """
-    # First-order Mobius coefficients (pure variance effects per feature)
-    m1 = {j: mobius_dict[(j,)] for j in FEATURES}
-
-    # Clip negative values (can occur due to estimation noise)
+    m1         = {j: mobius_dict[(j,)] for j in FEATURES}
     m1_clipped = {j: np.maximum(m1[j], 0.0) for j in FEATURES}
 
     denom_resolved = sum(m1_clipped.values())
@@ -476,7 +461,6 @@ def sobol_from_mobius_constant_kernel(mobius_dict, t):
 
     resolved = {j: m1_clipped[j] / denom_resolved for j in FEATURES}
 
-    # Time-aggregated: integrate numerator and denominator
     num_agg   = {j: float(np.trapezoid(m1_clipped[j], t)) for j in FEATURES}
     denom_agg = sum(num_agg.values())
     denom_agg = max(denom_agg, 1e-12)
@@ -491,13 +475,13 @@ def sobol_from_mobius_constant_kernel(mobius_dict, t):
 # ===========================================================================
 
 def run_experiment(args):
-    rng = np.random.default_rng(args.seed)
-    t   = t_grid
+    rng     = np.random.default_rng(args.seed)
+    t       = t_grid
     n_bg    = args.n_bg
     n_train = args.n_train
 
     log.info('=' * 60)
-    log.info('Part 2 — Theorem 2 Validation: Sobol Index Recovery')
+    log.info('Part 2 — Theorem Validation: Sobol Index Recovery')
     log.info(f'  n_bg    : {n_bg}   (background sample for Mobius)')
     log.info(f'  n_train : {n_train}  (training set for ML models)')
     log.info(f'  seed    : {args.seed}')
@@ -560,9 +544,9 @@ def run_experiment(args):
 
     for tag, fn in predict_fns.items():
         log.info(f'Computing variance game: {tag} ...')
-        v_dict      = compute_variance_game(fn, X_bg, t)
-        m_dict      = mobius_transform(v_dict)
-        res, agg    = sobol_from_mobius_constant_kernel(m_dict, t)
+        v_dict       = compute_variance_game(fn, X_bg, t)
+        m_dict       = mobius_transform(v_dict)
+        res, agg     = sobol_from_mobius_constant_kernel(m_dict, t)
         results[tag] = (res, agg)
 
         log.info(f'  {tag} aggregated: ' +
@@ -588,11 +572,13 @@ def _style_ax(ax, ylabel=None, xlabel='Time (h)'):
     ax.set_xticks(range(0, 25, 4))
     ax.set_ylim(-0.05, 1.05)
     ax.axhline(0, color='gray', lw=0.5, ls=':')
-    ax.tick_params(labelsize=8)
+    ax.tick_params(labelsize=11)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    if ylabel: ax.set_ylabel(ylabel, fontsize=9)
-    if xlabel: ax.set_xlabel(xlabel, fontsize=8)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=12)
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=12)
     ax.axvspan(8,  12, alpha=0.05, color='#2a9d8f', zorder=0)
     ax.axvspan(16, 20, alpha=0.05, color='#e9c46a', zorder=0)
 
@@ -603,21 +589,20 @@ def plot_sobol_recovery(results, t, plot_dir):
       Top row    : time-resolved Sobol index S_j(t) for each feature (3 panels)
       Bottom row : time-aggregated scalar bar chart (1 wide panel)
     """
-    methods = list(results.keys())   # analytical first, then models
+    methods = list(results.keys())
 
     fig = plt.figure(figsize=(16, 9))
     fig.suptitle(
-        'Theorem 2 Validation: Sobol Index Recovery under Constant Kernel\n'
+        'Theorem validation: Sobol Index recovery under constant kernel\n'
         r'$\nu_\mathrm{var}(S)(t,s) = \mathrm{Cov}(F^H_S(X)(t), F^H_S(X)(s))$, '
         r'$K(t,s) = 1$',
-        fontsize=11, fontweight='bold',
+        fontsize=14, fontweight='bold',
     )
 
-    # ---- layout: 2 rows, 4 cols; bottom row spans all 4 cols ----
     gs = fig.add_gridspec(
         2, 3,
         height_ratios=[1.6, 1.0],
-        hspace=0.45, wspace=0.30,
+        hspace=0.55, wspace=0.32,
     )
     axes_top = [fig.add_subplot(gs[0, k]) for k in range(3)]
     ax_bar   = fig.add_subplot(gs[1, :])
@@ -645,11 +630,12 @@ def plot_sobol_recovery(results, t, plot_dir):
             ylabel=r'$S_j(t)$' if col == 0 else None,
         )
         ax.set_title(
-            FEATURE_LABELS[j], fontsize=9,
-            fontweight='bold', color=FEATURE_COLORS[j],
+            FEATURE_LABELS[j],
+            fontsize=13, fontweight='bold',
+            color=FEATURE_COLORS[j],
         )
         if col == 2:
-            ax.legend(fontsize=7, loc='upper left', framealpha=0.9)
+            ax.legend(fontsize=11, loc='upper left', framealpha=0.9)
 
     # ------------------------------------------------------------------
     # Bottom row: aggregated bar chart
@@ -680,20 +666,23 @@ def plot_sobol_recovery(results, t, plot_dir):
 
     ax_bar.set_xticks(x_pos)
     ax_bar.set_xticklabels(
-        [FEATURE_LABELS[j] for j in FEATURES], fontsize=8.5
+        [FEATURE_LABELS[j] for j in FEATURES], fontsize=12,
     )
-    ax_bar.set_ylabel(r'$\xi_j^{\mathrm{aggr}}$', fontsize=10)
-    ax_bar.set_ylim(0, 1.05)
+    ax_bar.set_ylabel(r'$\xi_j^{\mathrm{aggr}}$', fontsize=13)
+    ax_bar.set_ylim(0, 1.15)
     ax_bar.axhline(0, color='gray', lw=0.5, ls=':')
     ax_bar.spines['top'].set_visible(False)
     ax_bar.spines['right'].set_visible(False)
     ax_bar.set_title(
-        r'Time-aggregated Sobol indices $\xi_j^{\mathrm{aggr}} = \int S_j(t)\,dt\,/\,|\mathcal{T}|$',
-        fontsize=9, fontweight='bold',
+        r'Time-aggregated Sobol indices  '
+        r'$\xi_j^{\mathrm{aggr}} = \int S_j(t)\,dt\,/\,|\mathcal{T}|$',
+        fontsize=13, fontweight='bold',
     )
-    ax_bar.legend(fontsize=7.5, ncol=len(methods), loc='upper right',
-                  framealpha=0.9)
-    ax_bar.tick_params(labelsize=8)
+    ax_bar.legend(
+        fontsize=11, ncol=len(methods),
+        loc='upper right', framealpha=0.9,
+    )
+    ax_bar.tick_params(labelsize=11)
     ax_bar.yaxis.grid(True, linestyle=':', alpha=0.4, color='gray')
     ax_bar.set_axisbelow(True)
 
@@ -704,22 +693,18 @@ def plot_mobius_curves(results, t, plot_dir):
     """
     Supplementary: plot the raw first-order Mobius coefficients m_{j}(t)
     (= variance effect before normalisation) for each method.
-    This makes the pre-normalisation agreement visible.
     """
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.0))
     fig.suptitle(
         r'First-order variance effects $m_{\{j\}}(t)$ before Sobol normalisation'
         '\n(constant kernel, sensitivity game)',
-        fontsize=11, fontweight='bold',
+        fontsize=14, fontweight='bold',
     )
 
-    # Re-run to get un-normalised values — store them in results as side channel
-    # We re-derive from resolved * denom  (resolved = m / sum_m, so m = resolved * sum_m)
-    # Simpler: just plot the product VAR_X * phi_j(t)^2 for analytical
     for col, j in enumerate(FEATURES):
         ax = axes[col]
 
-        # Analytical: Var(Xj) * phi_j(t)^2
+        # Analytical ground truth
         anal_m = VAR_X * PHI[j](t) ** 2
         ax.plot(
             t, anal_m,
@@ -730,15 +715,11 @@ def plot_mobius_curves(results, t, plot_dir):
             zorder=10,
         )
 
-        # For ML methods: recover m_j(t) = resolved_j(t) * sum_k resolved_k(t) * denom
-        # Since we only stored normalised values, plot resolved * total_variance_proxy
-        # Instead: show relative to analytical maximum for visual comparison
-        anal_max = anal_m.max()
+        # ML methods: approximate unnormalised m_j using analytical denominator
+        denom_anal = sum(VAR_X * PHI[k](t)**2 for k in FEATURES)
         for tag in [k for k in results.keys() if k != 'analytical']:
             res, _ = results[tag]
-            # unnormalised estimate: res[j] * sum_k VAR_X*phi_k^2
-            denom_anal = sum(VAR_X * PHI[k](t)**2 for k in FEATURES)
-            m_unnorm   = res[j] * denom_anal   # approximation using analytical denom
+            m_unnorm = res[j] * denom_anal
             ax.plot(
                 t, m_unnorm,
                 color=METHOD_COLORS[tag],
@@ -751,20 +732,24 @@ def plot_mobius_curves(results, t, plot_dir):
         ax.axhline(0, color='gray', lw=0.5, ls=':')
         ax.set_xlim(0, 24)
         ax.set_xticks(range(0, 25, 4))
-        ax.tick_params(labelsize=8)
+        ax.tick_params(labelsize=11)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.set_xlabel('Time (h)', fontsize=8)
+        ax.set_xlabel('Time (h)', fontsize=12)
         ax.axvspan(8,  12, alpha=0.05, color='#2a9d8f', zorder=0)
         ax.axvspan(16, 20, alpha=0.05, color='#e9c46a', zorder=0)
 
         if col == 0:
-            ax.set_ylabel(r'$m_{\{j\}}(t) \approx \mathrm{Var}(X_j)\,\phi_j(t)^2$',
-                          fontsize=9)
-            ax.legend(fontsize=7, loc='upper right')
+            ax.set_ylabel(
+                r'$m_{\{j\}}(t) \approx \mathrm{Var}(X_j)\,\phi_j(t)^2$',
+                fontsize=12,
+            )
+            ax.legend(fontsize=11, loc='upper right')
+
         ax.set_title(
-            FEATURE_LABELS[j], fontsize=9,
-            fontweight='bold', color=FEATURE_COLORS[j],
+            FEATURE_LABELS[j],
+            fontsize=13, fontweight='bold',
+            color=FEATURE_COLORS[j],
         )
 
     plt.tight_layout()
@@ -773,7 +758,7 @@ def plot_mobius_curves(results, t, plot_dir):
 
 def print_aggregated_table(results):
     """Print a formatted table of aggregated Sobol indices."""
-    col_w = 12
+    col_w  = 12
     header = f"{'Method':<25}" + ''.join(
         f"{'X' + str(j):>{col_w}}" for j in FEATURES
     ) + f"{'Sum':>{col_w}}"

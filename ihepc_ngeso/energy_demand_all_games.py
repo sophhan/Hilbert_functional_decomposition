@@ -1222,7 +1222,8 @@ def fig0_main_body(ds_ih, ds_ne,
 
     # ── Helper: prediction panel ──────────────────────────────────────────
     def _pred_panel(ax, ds, mob, shap, K_id, K_corr,
-                    etype, title_str, tag, show_legend=False):
+                    etype, title_str, tag, show_legend=False,
+                    force_features=None): 
         features = ds['features']
         p, T     = len(features), ds['T']
         t_grid   = ds['t_grid']
@@ -1233,7 +1234,10 @@ def fig0_main_body(ds_ih, ds_ne,
 
         imps = {i: float(np.sum(np.abs(apply_kernel(partial_eff[i], K_corr))))
                 for i in range(p)}
-        top2 = sorted(imps, key=imps.get, reverse=True)[:2]
+        if force_features is not None:                          
+            top2 = [features.index(f) for f in force_features]
+        else:
+            top2 = sorted(imps, key=imps.get, reverse=True)[:2]
 
         for fi in top2:
             col = FEAT_COLORS[features[fi]]
@@ -1269,15 +1273,19 @@ def fig0_main_body(ds_ih, ds_ne,
     # ── Row 1 ─────────────────────────────────────────────────────────────
     _pred_panel(ax_ih_pure, ds_ih, mob_ih, shap_ih, K_id_ih, K_ih,
                 'pure',    'Pure  $m_i \\equiv$ PDP',  'ihepc',
-                show_legend=True)
+                show_legend=True,
+                force_features=['month', 'lag_morning'])
     _pred_panel(ax_ih_part, ds_ih, mob_ih, shap_ih, K_id_ih, K_ih,
-                'partial', 'Partial  $\\phi_i \\equiv$ SHAP', 'ihepc')
+                'partial', 'Partial  $\\phi_i \\equiv$ SHAP', 'ihepc',
+                force_features=['month', 'lag_morning'])
     _pred_panel(ax_ne_pure, ds_ne, mob_ne, shap_ne, K_id_ne, K_ne,
                 'pure',    'Pure  $m_i \\equiv$ PDP',  'neso',
-                show_legend=False)
+                show_legend=False,
+                force_features=['season', 'month'])
     _pred_panel(ax_ne_part, ds_ne, mob_ne, shap_ne, K_id_ne, K_ne,
                 'partial', 'Partial  $\\phi_i \\equiv$ SHAP', 'neso',
-                show_legend=True)
+                show_legend=True,
+                force_features=['season', 'month'])  
 
     # Align y-axes within each dataset (col0+col1 share scale; col2+col3 share scale)
     for ax_a, ax_b in [(ax_ih_pure, ax_ih_part),
@@ -1575,6 +1583,330 @@ def fig_network_appendix(ds, mob_dict, shap_dict, K_corr):
     )
     return fig
 
+# ===========================================================================
+# fig0_main_body_v2 -- Two-row alternative main body figure
+#
+#   Row 0:  [IHEPC nets (sens.partial | pred.partial)] |
+#           [IHEPC corr. heatmap + row-slice]          |
+#           [NESO  corr. heatmap + row-slice]           |
+#           [NESO  nets (sens.partial | pred.partial)]
+#
+#   Row 1:  [IHEPC sensitivity gap] | [IHEPC partial SHAP] |
+#           [NESO  partial SHAP]    | [NESO  sensitivity gap]
+# ===========================================================================
+
+def fig0_main_body_v2(ds_ih, ds_ne,
+                      mob_ih, shap_ih,
+                      mob_ne, shap_ne,
+                      K_ih,   K_ne):
+
+    # ── Local font sizes ─────────────────────────────────────────────────
+    FS_SUP  = 14
+    FS_T    = 11
+    FS_AX   = 10
+    FS_TK   = 8.5
+    FS_LEG  = 8.5
+    FS_RLAB = 10.5
+
+    # ── Visual constants ─────────────────────────────────────────────────
+    ID_ALPHA, ID_LW = 0.55, 2.0
+    MX_LW           = 2.4
+
+    K_id_ih = kernel_identity(ds_ih['T'])
+    K_id_ne = kernel_identity(ds_ne['T'])
+
+    # ── Figure ────────────────────────────────────────────────────────────
+    fig = plt.figure(figsize=(26, 10))
+
+    # ── Outer GridSpec: 2 content rows ───────────────────────────────────
+    gs_outer = GridSpec(
+        2, 1, figure=fig,
+        height_ratios=[1.0, 1.05],
+        hspace=0.55,
+        top=0.88, bottom=0.09,
+        left=0.04, right=0.98,
+    )
+
+    # ── Row 0 inner: 8 columns ───────────────────────────────────────────
+    gs0 = GridSpecFromSubplotSpec(
+        1, 8,
+        subplot_spec=gs_outer[0],
+        wspace=0.32,
+        width_ratios=[0.85, 0.85, 1.2, 1.2, 1.2, 1.2, 0.85, 0.85],
+    )
+
+    ax_net_ih_sens = fig.add_subplot(gs0[0])
+    ax_net_ih_pred = fig.add_subplot(gs0[1])
+    ax_ih_heat     = fig.add_subplot(gs0[2])
+    ax_ih_row      = fig.add_subplot(gs0[3])
+    ax_ne_heat     = fig.add_subplot(gs0[4])
+    ax_ne_row      = fig.add_subplot(gs0[5])
+    ax_net_ne_sens = fig.add_subplot(gs0[6])
+    ax_net_ne_pred = fig.add_subplot(gs0[7])
+
+    # ── Row 1 inner: 4 equal columns ─────────────────────────────────────
+    gs1 = GridSpecFromSubplotSpec(
+        1, 4,
+        subplot_spec=gs_outer[1],
+        wspace=0.32,
+    )
+
+    ax_ih_part = fig.add_subplot(gs1[0])
+    ax_ih_gap  = fig.add_subplot(gs1[1])
+    ax_ne_gap  = fig.add_subplot(gs1[2])
+    ax_ne_part = fig.add_subplot(gs1[3])
+
+    # ── Suptitle ──────────────────────────────────────────────────────────
+    fig.suptitle(
+        'Energy demand: correlation structure drives explanation shape\n'
+        'UCI IHEPC (single household, kW)  vs  NESO GB Demand (national grid, MW)',
+        fontsize=FS_SUP, fontweight='bold', y=0.975,
+    )
+
+    # =====================================================================
+    # Row 0 helpers
+    # =====================================================================
+
+    def _heatmap(ax, ds, K, tag):
+        T, tlabels = ds['T'], ds['tlabels']
+        step  = max(1, T // 6)
+        ticks = list(range(0, T, step))
+        im = ax.imshow(K, aspect='equal', origin='upper',
+                       cmap='RdBu_r', vmin=-0.2, vmax=1.0)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([tlabels[i] for i in ticks],
+                           rotation=45, ha='right', fontsize=6.5)
+        ax.set_yticks(ticks)
+        ax.set_yticklabels([tlabels[i] for i in ticks], fontsize=6)
+        ax.set_title(
+            DS_LABEL[tag].replace('\n', ' ') + '\ncorrelation kernel $K$',
+            fontsize=FS_AX, fontweight='bold', color=DS_COLOR[tag])
+        am = (ds['morning'][0] + ds['morning'][1]) // 2
+        ax.axhline(am, color='white', lw=0.8, ls='--', alpha=0.6)
+        ax.axvline(am, color='white', lw=0.8, ls='--', alpha=0.6)
+        plt.colorbar(im, ax=ax, fraction=0.06, pad=0.03).ax.tick_params(
+            labelsize=6)
+
+    def _rowslice(ax, ds, K, tag):
+        T, tlabels       = ds['T'], ds['tlabels']
+        morning, evening = ds['morning'], ds['evening']
+        am    = (morning[0] + morning[1]) // 2
+        step  = max(1, T // 6)
+        ticks = list(range(0, T, step))
+        ax.plot(np.arange(T), K[am, :], color=DS_COLOR[tag], lw=2.0)
+        ax.axhline(0, color='gray', lw=0.5, ls=':')
+        ax.axvspan(*morning, alpha=0.12, color='#4a90e2')
+        ax.axvspan(*evening, alpha=0.12, color='#e24a4a')
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([tlabels[i] for i in ticks],
+                           rotation=45, ha='right', fontsize=6.5)
+        ax.set_xlim(-0.5, T - 0.5)
+        ax.set_ylabel('$K(t_{AM}, s)$', fontsize=FS_AX - 1)
+        ax.set_xlabel('Time $s$',        fontsize=FS_AX - 1)
+        ax.tick_params(labelsize=FS_TK - 1)
+        title = ('Structured (AM$\\leftrightarrow$PM)'
+                 if tag == 'ihepc' else 'Uniform (regime-dominated)')
+        ax.set_title(title, fontsize=FS_AX, color=DS_COLOR[tag],
+                     fontweight='bold')
+
+    # ── Row 0: heatmaps + row-slices ─────────────────────────────────────
+    _heatmap( ax_ih_heat, ds_ih, K_ih, 'ihepc')
+    _rowslice(ax_ih_row,  ds_ih, K_ih, 'ihepc')
+    _heatmap( ax_ne_heat, ds_ne, K_ne, 'neso')
+    _rowslice(ax_ne_row,  ds_ne, K_ne, 'neso')
+
+    # ── Row 0: network panels ─────────────────────────────────────────────
+    net_specs = [
+        (ax_net_ih_sens,
+         mob_ih['sensitivity'], shap_ih['sensitivity'],
+         ds_ih['features'], ds_ih['T'], K_ih, 'partial',
+         'IHEPC sens.\npartial (corr)'),
+        (ax_net_ih_pred,
+         mob_ih['prediction'],  shap_ih['prediction'],
+         ds_ih['features'], ds_ih['T'], K_ih, 'partial',
+         'IHEPC pred.\npartial (corr)'),
+        (ax_net_ne_sens,
+         mob_ne['sensitivity'], shap_ne['sensitivity'],
+         ds_ne['features'], ds_ne['T'], K_ne, 'partial',
+         'NESO sens.\npartial (corr)'),
+        (ax_net_ne_pred,
+         mob_ne['prediction'],  shap_ne['prediction'],
+         ds_ne['features'], ds_ne['T'], K_ne, 'partial',
+         'NESO pred.\npartial (corr)'),
+    ]
+
+    net_handles = [
+        Patch(facecolor=_NODE_POS, edgecolor='none', label='Positive'),
+        Patch(facecolor=_NODE_NEG, edgecolor='none', label='Negative'),
+    ]
+
+    for ax, mob, shap, features, T, K, etype, ntitle in net_specs:
+        node_imp, edge_imp, node_sign = _network_importances(
+            mob, shap, len(features), T, K, etype)
+        _draw_network(ax, features, node_imp, edge_imp, node_sign, ntitle)
+        ax.legend(
+            handles=net_handles,
+            loc='lower center',
+            ncol=2,
+            fontsize=FS_LEG - 1.5,
+            framealpha=0.88,
+            bbox_to_anchor=(0.5, -0.18),
+            bbox_transform=ax.transAxes,
+            borderpad=0.4,
+            handlelength=1.2,
+        )
+
+    # =====================================================================
+    # Row 1 helpers
+    # =====================================================================
+
+    def _partial_panel(ax, ds, mob, shap, K_id, K_corr, tag,
+                       show_legend=False, force_features=None):
+        features    = ds['features']
+        p, T        = len(features), ds['T']
+        partial_eff = shap['prediction']
+
+        imps = {i: float(np.sum(np.abs(apply_kernel(partial_eff[i], K_corr))))
+                for i in range(p)}
+        if force_features is not None:
+            top2 = [features.index(f) for f in force_features]
+        else:
+            top2 = sorted(imps, key=imps.get, reverse=True)[:2]
+
+        for fi in top2:
+            col = FEAT_COLORS[features[fi]]
+            ls  = '-' if fi == top2[0] else '--'
+            ax.plot(ds['t_grid'],
+                    apply_kernel(partial_eff[fi], K_id),
+                    color=col, lw=ID_LW, ls=ls, alpha=ID_ALPHA)
+            ax.plot(ds['t_grid'],
+                    apply_kernel(partial_eff[fi], K_corr),
+                    color=col, lw=MX_LW, ls=ls,
+                    label=features[fi])
+
+        ax.axhline(0, color='gray', lw=0.5, ls=':')
+        _shade(ax, ds)
+        _xticks(ax, ds, sparse=True)
+        ax.tick_params(labelsize=FS_TK)
+        ax.set_xlabel('Time', fontsize=FS_AX)
+        ax.set_ylabel(ds['ylabel']['prediction'], fontsize=FS_AX)
+        ax.set_title(
+            'Partial  $\\phi_i \\equiv$ SHAP\n'
+            + DS_LABEL[tag].split('\n')[0],
+            fontsize=FS_T, fontweight='bold', color=DS_COLOR[tag])
+
+        if show_legend:
+            handles = [
+                Line2D([0], [0],
+                       color=FEAT_COLORS[features[top2[0]]],
+                       lw=MX_LW, ls='-',
+                       label=features[top2[0]] + ' (corr.)'),
+                Line2D([0], [0],
+                       color=FEAT_COLORS[features[top2[1]]],
+                       lw=MX_LW, ls='--',
+                       label=features[top2[1]] + ' (corr.)'),
+                Line2D([0], [0],
+                       color='gray', lw=ID_LW, ls='-',
+                       alpha=ID_ALPHA, label='identity (faded)'),
+            ]
+            ax.legend(handles=handles, fontsize=FS_LEG,
+                      loc='upper left', framealpha=0.9)
+
+    def _gap_panel_r1(ax, ds, mob_sens, K_corr, tag):
+        features = ds['features']
+        p, T     = len(features), ds['T']
+        t_grid   = ds['t_grid']
+
+        pure_eff = _pure_effects_e(mob_sens, p, T)
+        full_eff = _full_effects_e(mob_sens, p, T)
+        gap      = {i: full_eff[i] - pure_eff[i] for i in range(p)}
+        gap_imp  = {
+            i: float(np.sum(np.abs(apply_kernel(gap[i], K_corr))))
+            for i in range(p)
+        }
+        fi  = max(gap_imp, key=gap_imp.get)
+        col = FEAT_COLORS[features[fi]]
+
+        pure_c = apply_kernel(pure_eff[fi], K_corr)
+        full_c = apply_kernel(full_eff[fi], K_corr)
+        gap_c  = apply_kernel(gap[fi],      K_corr)
+
+        ax.fill_between(t_grid, pure_c, full_c,
+                        color=col, alpha=0.20, label='gap region')
+        ax.plot(t_grid, full_c, color=col, lw=2.0, ls='-',
+                label=r'Full $\bar{\tau}_i$ (Total Sobol)')
+        ax.plot(t_grid, pure_c, color=col, lw=2.0, ls='--',
+                label=r'Pure $\tau^{\mathrm{cl}}_i$ (Closed Sobol)')
+        ax.plot(t_grid, gap_c,  color='black', lw=1.4, ls=':',
+                alpha=0.7, label=r'Gap $\Delta\tau_i$')
+        ax.axhline(0, color='gray', lw=0.5, ls=':')
+        _shade(ax, ds)
+        _xticks(ax, ds, sparse=True)
+        ax.tick_params(labelsize=FS_TK)
+        ax.set_xlabel('Time', fontsize=FS_AX)
+        ax.set_ylabel(ds['ylabel']['sensitivity'], fontsize=FS_AX)
+        integ = float(
+            np.trapz(np.abs(apply_kernel(gap[fi], K_corr)), t_grid))
+        ax.set_title(
+            'Sensitivity gap  —  corr. kernel\n'
+            '{} — {}    '
+            r'$\int|\Delta\tau_i|\,dt = {:.3g}$'.format(
+                DS_LABEL[tag].split('\n')[0], features[fi], integ),
+            fontsize=FS_T - 1, fontweight='bold', color=DS_COLOR[tag])
+        ax.legend(
+            fontsize=FS_LEG,
+            loc='upper center',
+            bbox_to_anchor=(0.5, -0.22),
+            ncol=2,
+            framealpha=0.85,
+        )
+
+    # ── Row 1: partial Shapley panels ─────────────────────────────────────
+    _partial_panel(
+        ax_ih_part, ds_ih, mob_ih, shap_ih, K_id_ih, K_ih,
+        tag='ihepc', show_legend=True,
+        force_features=['month', 'lag_morning'],
+    )
+    _partial_panel(
+        ax_ne_part, ds_ne, mob_ne, shap_ne, K_id_ne, K_ne,
+        tag='neso', show_legend=True,
+        force_features=['season', 'month'],
+    )
+
+    # ── Row 1: sensitivity gap panels ─────────────────────────────────────
+    _gap_panel_r1(ax_ih_gap, ds_ih, mob_ih['sensitivity'], K_ih, 'ihepc')
+    _gap_panel_r1(ax_ne_gap, ds_ne, mob_ne['sensitivity'], K_ne, 'neso')
+
+    # ── Dataset labels ────────────────────────────────────────────────────
+    ax_net_ih_sens.text(
+        -0.14, 0.5, 'IHEPC',
+        transform=ax_net_ih_sens.transAxes,
+        fontsize=FS_RLAB, va='center', ha='right',
+        rotation=90, color=DS_COLOR['ihepc'], fontweight='bold',
+    )
+    ax_net_ne_pred.text(
+        1.14, 0.5, 'NESO',
+        transform=ax_net_ne_pred.transAxes,
+        fontsize=FS_RLAB, va='center', ha='left',
+        rotation=90, color=DS_COLOR['neso'], fontweight='bold',
+    )
+    ax_ih_part.text(
+        -0.20, 0.5, 'IHEPC',
+        transform=ax_ih_part.transAxes,
+        fontsize=FS_RLAB, va='center', ha='right',
+        rotation=90, color=DS_COLOR['ihepc'], fontweight='bold',
+    )
+    ax_ne_part.text(
+        1.20, 0.5, 'NESO',
+        transform=ax_ne_part.transAxes,
+        fontsize=FS_RLAB, va='center', ha='left',
+        rotation=90, color=DS_COLOR['neso'], fontweight='bold',
+    )
+
+    plt.tight_layout(rect=[0.03, 0.07, 0.99, 0.90])
+    fig.subplots_adjust(top=0.88, bottom=0.10, hspace=0.55)
+    return fig
+
 
 # ===========================================================================
 # 14. Run all games / profiles
@@ -1801,6 +2133,13 @@ if __name__ == '__main__':
     savefig(
         fig_network_appendix(ds_ne, mob_ne, shap_ne, K_ne),
         'fig_network_appendix_neso.pdf')
+    
+    savefig(
+        fig0_main_body_v2(ds_ih, ds_ne,
+                          mob_ih, shap_ih,
+                          mob_ne, shap_ne,
+                          K_ih,   K_ne),
+        'fig0_main_body_v2.pdf')
 
     print('\n' + '=' * 60)
     print('  Done.  Figures in {}/'.format(BASE_PLOT_DIR))
