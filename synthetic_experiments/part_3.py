@@ -304,7 +304,7 @@ def build_figure(
     ax_agg.axhline(0, color='gray', lw=0.6, ls=':')
     ax_agg.tick_params(labelsize=FS_TICK)
     _spine(ax_agg)
-    ax_agg.set_ylabel(r'$\Phi_S = \int(Kf_S)(t)\,dt$',
+    ax_agg.set_ylabel(r'$\int(Kf_S)(t)\,dt$',
                       fontsize=FS_LABEL)
     ax_agg.set_title(
         'Time-aggregated importance  '
@@ -575,7 +575,7 @@ def make_periodic_figure():
     ax_agg.set_xticklabels(feat_names, fontsize=FS_LABEL)
     ax_agg.axhline(0, color='gray', lw=0.6, ls=':')
     ax_agg.tick_params(labelsize=FS_TICK); _spine(ax_agg)
-    ax_agg.set_ylabel(r'$\Phi_S = \int(Kf_S)(t)\,dt$',
+    ax_agg.set_ylabel(r'$\int(Kf_S)(t)\,dt$',
                       fontsize=FS_LABEL)
     ax_agg.set_title('Time-aggregated importance',
                      fontsize=FS_AGG_TITLE, fontweight='bold', pad=12)
@@ -641,7 +641,7 @@ def make_ranking_summary():
 
     fig, axes = plt.subplots(1, 3, figsize=(22, 8))
     fig.suptitle(
-        r'Time-aggregated importance $\Phi_S = \int(Kf_S)(t)\,dt$'
+        r'Time-aggregated importance $\int(Kf_S)(t)\,dt$'
         ' — all examples and kernels\n'
         'Ranking preserved across kernels in all three examples.',
         fontsize=FS_SUPTITLE, fontweight='bold',
@@ -672,7 +672,7 @@ def make_ranking_summary():
         ax.set_xticklabels(feat_names, fontsize=FS_LABEL)
         ax.axhline(0, color='gray', lw=0.6, ls=':')
         ax.tick_params(labelsize=FS_TICK); _spine(ax)
-        ax.set_ylabel(r'$\Phi_S$', fontsize=FS_LABEL)
+        ax.set_ylabel(r'$\int(Kf_S)(t)\,dt$', fontsize=FS_LABEL)
         ax.set_title(ex_title, fontsize=FS_AGG_TITLE, fontweight='bold',
                      pad=12)
         ax.legend(fontsize=FS_LEGEND, loc='upper right')
@@ -923,7 +923,7 @@ def make_condensed_figure():
         ax.axhline(0, color='gray', lw=0.6, ls=':')
         ax.tick_params(labelsize=FS_TICK)
         _spine(ax)
-        ax.set_ylabel(r'$\Phi_S = \int(Kf_S)(t)\,dt$',
+        ax.set_ylabel(r'$\int(Kf_S)(t)\,dt$',
                       fontsize=FS_LABEL)
         ax.legend(fontsize=FS_LEGEND, loc='upper right')
 
@@ -1193,7 +1193,7 @@ def _draw_aggregated_inner(ax, effects, kernels_info, dt):
     ax.axhline(0, color='gray', lw=0.6, ls=':')
     ax.tick_params(labelsize=FS_TICK)
     _spine(ax)
-    ax.set_ylabel(r'$\Phi_S = \int(Kf_S)(t)\,dt$', fontsize=FS_LABEL)
+    ax.set_ylabel(r'$\int(Kf_S)(t)\,dt$', fontsize=FS_LABEL)
 
 
 def _make_bar_handles(kernels_info):

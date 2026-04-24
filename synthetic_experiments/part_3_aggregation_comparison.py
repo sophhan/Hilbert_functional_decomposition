@@ -131,26 +131,10 @@ def sensitivity_pure_effect(fn):
     """
     First-order variance effect (Mobius coeff for singleton {j}):
       m_{j}(t) = Var(Xj) * phi_j(t)^2
-    This is the pure variance contribution of feature j to the
-    covariance surface nu_var({j})(t,s) = Var(Xj)*phi_j(t)*phi_j(s).
     """
     return VAR_X * PHI[fn](t)**2
 
 def time_agg_sensitivity(fn, K):
-    """
-    Under the constant kernel K(t,s)=1:
-      Phi_j = int int K(t,s) * Var(Xj)*phi_j(t)*phi_j(s) ds dt
-            = Var(Xj) * (int phi_j(t) dt)^2
-
-    Under a general kernel K:
-      Phi_j = int (K m_j)(t) dt
-    where m_j(t) = Var(Xj)*phi_j(t)^2 is the diagonal of the covariance surface.
-
-    This is the standard approach: apply the kernel to the variance
-    effect curve m_j(t) and integrate.
-    Note: for the covariance kernel this corresponds to the Shi (2018)
-    style aggregation.
-    """
     m_j = sensitivity_pure_effect(fn)
     return time_agg_pred(m_j, K)
 
@@ -160,28 +144,8 @@ def time_agg_sensitivity(fn, K):
 
 def risk_pure_effect(fn):
     """
-    Correct closed-form Mobius coefficient for the risk game singleton {j}.
-
-    Risk game value function:
-      v_risk(S)(t) = E_{X_{-S}}[ (Y(t) - F_S(x*_S, X_{-S})(t))^2 ]
-
-    For the additive model F(x)(t) = sum_j xj*phi_j(t) with Y(t)=F(x*)(t)
-    and Xi ~ Uniform[0,1] independently:
-
-      Y(t) - F_S(x*_S, X_{-S})(t) = sum_{j not in S} (x*_j - X_j) phi_j(t)
-
-    Taking expectation over X_{-S}:
-      v_risk(S)(t) = sum_{j not in S} Var(Xj) * phi_j(t)^2
-
-    Mobius inversion gives the singleton pure effect:
-      m_{j}(t) = v_risk({j})(t) - v_risk({})(t)
-               = [sum_{k != j} Var(Xk)*phi_k^2] - [sum_k Var(Xk)*phi_k^2]
-               = -Var(Xj) * phi_j(t)^2
-
-    This is always NEGATIVE: fixing X_j reduces the MSE by Var(Xj)*phi_j(t)^2.
-    The more negative, the more informative the feature.
-    Note: the result does not depend on x* — it measures epistemic uncertainty
-    reduction, not the deviation of x* from the mean.
+    Mobius coefficient for the risk game singleton {j}:
+      m_{j}(t) = -Var(Xj) * phi_j(t)^2
     """
     return -VAR_X * PHI[fn](t)**2
 
@@ -287,20 +251,21 @@ def make_ranking_games_figure():
     #   Row 0: time-resolved pure effects for each game (3 panels)
     #   Row 1: time-aggregated bar chart for each game (3 panels)
     # -----------------------------------------------------------------------
-    fig = plt.figure(figsize=(16, 9))
+    fig = plt.figure(figsize=(16, 7.5))
     fig.suptitle(
         'Ranking preservation across kernels — all three games\n'
         r'ICU model: $F(\mathbf{x})(t)=X_1 e^{-0.2t}+'
         r'X_2 e^{-(t-10)^2/2}+X_3 e^{-(t-18)^2/2}$,'
         r'  $\mathbf{x}^*=(0.8,\,0.9,\,0.7)$',
-        fontsize=10, fontweight='bold',
+        fontsize=13, fontweight='bold',
     )
 
     gs = gridspec.GridSpec(
         2, 3, figure=fig,
-        hspace=0.50, wspace=0.32,
+        height_ratios=[1.0, 0.85],
+        hspace=0.42, wspace=0.32,
         left=0.07, right=0.96,
-        top=0.88, bottom=0.08,
+        top=0.88, bottom=0.09,
     )
 
     pred_effects = pure_effects_pred()
@@ -337,15 +302,16 @@ def make_ranking_games_figure():
         ax.axvspan(8,  12, alpha=0.07, color=C_X2, zorder=0)
         ax.axvspan(16, 20, alpha=0.07, color=C_X3, zorder=0)
         ax.set_xlim(0, 24); ax.set_xticks(range(0, 25, 4))
-        ax.set_xticklabels([str(v) for v in range(0, 25, 4)], fontsize=7)
+        ax.set_xticklabels([str(v) for v in range(0, 25, 4)], fontsize=9)
         ax.set_ylim(ymin, ymax)
-        ax.tick_params(labelsize=8); _spine(ax)
-        ax.set_xlabel('Time (h)', fontsize=8)
-        ax.set_ylabel(game_ylabels[game], fontsize=7.5)
+        ax.tick_params(labelsize=9)
+        _spine(ax)
+        ax.set_xlabel('Time (h)', fontsize=10)
+        ax.set_ylabel(game_ylabels[game], fontsize=9)
         ax.set_title(f'{game} game — pure effects',
-                     fontsize=9, fontweight='bold')
+                     fontsize=11, fontweight='bold')
         if col == 0:
-            ax.legend(fontsize=7.5, loc='upper right', framealpha=0.85)
+            ax.legend(fontsize=9, loc='upper right', framealpha=0.85)
 
     # ------------------------------------------------------------------
     # Row 1: time-aggregated bar chart, one panel per game
@@ -367,7 +333,7 @@ def make_ranking_games_figure():
                    width=bar_w*0.88, color=kc,
                    alpha=0.85, label=kl)
 
-        # Ranking labels
+        # Ranking annotation — bottom-right for col 2, top-right otherwise
         ref_rank = ranking(normalise(importances[game][KERNELS[0][0]]))
         all_same = all(
             ranking(normalise(importances[game][kl])) == ref_rank
@@ -375,15 +341,19 @@ def make_ranking_games_figure():
         )
         status_color = '#009E73' if all_same else '#D55E00'
         status_text  = '✓ Ranking preserved' if all_same else '✗ Ranking changed'
-        ax.text(0.97, 0.97, status_text,
-                transform=ax.transAxes, fontsize=8,
-                va='top', ha='right', color=status_color,
-                fontweight='bold')
+        ypos   = 0.03 if col == 2 else 0.97
+        va_pos = 'bottom' if col == 2 else 'top'
+        ax.text(
+            0.97, ypos, status_text,
+            transform=ax.transAxes, fontsize=10,
+            va=va_pos, ha='right',
+            color=status_color,
+            fontweight='bold',
+        )
 
         ax.set_xticks(x_pos)
-        ax.set_xticklabels(FEAT_NAMES, fontsize=9)
+        ax.set_xticklabels(FEAT_NAMES, fontsize=11)
         ax.axhline(0, color='gray', lw=0.5, ls=':')
-        # y-limits: risk game values are negative, others positive
         all_bar_vals = [normalise(importances[game][kl])[fn]
                         for kl, _, _ in KERNELS for fn in FEAT_NAMES]
         ylo = min(min(all_bar_vals)*1.3, -0.05)
@@ -391,18 +361,19 @@ def make_ranking_games_figure():
         ax.set_ylim(ylo, yhi)
         ax.yaxis.grid(True, linestyle=':', alpha=0.4, color='gray')
         ax.set_axisbelow(True)
-        ax.tick_params(labelsize=8); _spine(ax)
-        ax.set_ylabel('Normalised $\\Phi_S$ (sums to 1)', fontsize=8)
+        ax.tick_params(labelsize=9)
+        _spine(ax)
+        ax.set_ylabel('Normalised $\\Phi_S$ (sums to 1)', fontsize=10)
         ax.set_title(f'{game} game — time-aggregated importance',
-                     fontsize=9, fontweight='bold')
+                     fontsize=11, fontweight='bold')
         if col == 0:
-            ax.legend(fontsize=7.5, loc='center right', framealpha=0.85)
+            ax.legend(fontsize=9, loc='center right', framealpha=0.85)
 
-    # Row labels — use the already-created col-2 axes, don't create new ones
+    # Row labels on right edge of last column axes
     for ax_last, label in [(fig.axes[2], 'Time-resolved'),
                            (fig.axes[5], 'Time-aggregated')]:
         ax_last.text(1.02, 0.5, label,
-                     transform=ax_last.transAxes, fontsize=9,
+                     transform=ax_last.transAxes, fontsize=11,
                      va='center', rotation=270, color='gray')
 
     savefig(fig, 'fig6_ranking_preservation_games.pdf')

@@ -722,10 +722,6 @@ def _style_ax(ax, ylabel=None, xlabel='Time (h)'):
 def _n_recovery_panel(ax, error_dict, n_values, tag_list,
                       S, xtl, show_legend=False,
                       ylabel=None, xlabel=True):
-    """
-    Draw one N-recovery panel (single subset, single error type).
-    Shared between standalone and combined figures.
-    """
     for tag in tag_list:
         means = np.array([error_dict[n][tag][S].mean() for n in n_values])
         stds  = np.array([error_dict[n][tag][S].std()  for n in n_values])
@@ -831,22 +827,17 @@ def plot_n_recovery_agg(agg_errors, n_values, n_runs,
 
 
 # ===========================================================================
-# 10c.  NEW — Fig 1c — Combined N-recovery: L2 (row 0) + Agg (row 1)
+# 10c.  Fig 1c — Combined N-recovery: L2 (row 0) + Agg (row 1)
 # ===========================================================================
 
 def plot_n_recovery_combined(l2_errors, agg_errors, n_values, n_runs,
                              plot_dir, all_models,
                              report_subsets, subset_labels, subset_colors):
-    """
-    2 rows x 4 cols:
-      Row 0: normalised L2 error, one panel per subset
-      Row 1: relative aggregated error, one panel per subset
-    """
     n_cols = len(report_subsets)
     fig, axes = plt.subplots(
         2, n_cols,
-        figsize=(5.0 * n_cols, 9.5),
-        gridspec_kw={'hspace': 0.45, 'wspace': 0.28},
+        figsize=(5.0 * n_cols, 11.0),
+        gridspec_kw={'hspace': 0.55, 'wspace': 0.28},
     )
     fig.suptitle(
         f'N-Recovery: Normalised L2 error (top) and '
@@ -857,7 +848,7 @@ def plot_n_recovery_combined(l2_errors, agg_errors, n_values, n_runs,
     xtl = [str(n) if n < 1000 else f'{n // 1000}k'
            for n in n_values]
 
-    row_labels = ['Normalised L2 error', 'Relative aggregated error']
+    row_labels  = ['Normalised L2 error', 'Relative aggregated error']
     error_dicts = [l2_errors, agg_errors]
 
     for row, (err_dict, row_label) in enumerate(
@@ -866,25 +857,38 @@ def plot_n_recovery_combined(l2_errors, agg_errors, n_values, n_runs,
             ax = axes[row, col]
             _n_recovery_panel(
                 ax, err_dict, n_values, all_models, S, xtl,
-                show_legend=(row == 0 and col == 0),
+                show_legend=False,
                 ylabel=row_label if col == 0 else None,
                 xlabel=(row == 1),
             )
             if row == 0:
                 ax.set_title(subset_labels[S], fontsize=FS_TITLE,
                              fontweight='bold', color=subset_colors[S])
-            # Row label on right edge of last column
             if col == n_cols - 1:
                 ax.text(1.03, 0.5, row_label,
                         transform=ax.transAxes,
                         fontsize=FS_LABEL - 1, va='center',
                         rotation=270, color='gray')
 
+    # single one-line legend centred below the full top row
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles, labels,
+        fontsize=FS_LEGEND,
+        ncol=len(handles),
+        loc='upper center',
+        bbox_to_anchor=(0.5, 0.505),
+        framealpha=0.9,
+        borderaxespad=0.0,
+        handlelength=2.0,
+        columnspacing=1.2,
+    )
+
     savefig(fig, 'fig1c_n_recovery_combined.pdf', plot_dir)
 
 
 # ===========================================================================
-# 11.  Fig 2 — Time-resolved effect curves (standalone)
+# 11.  Effect comparison helpers (shared by standalone + combined)
 # ===========================================================================
 
 def _effect_comparison_panels(axes, representative, t,
@@ -892,10 +896,6 @@ def _effect_comparison_panels(axes, representative, t,
                                model_colors, model_ls,
                                report_subsets, subset_labels,
                                subset_colors):
-    """
-    Fill a 1-D array of axes with time-resolved effect curves.
-    Shared by the standalone and combined figures.
-    """
     tags = [tg for tg in all_models if tg != 'oracle']
     truth_effects = representative['_truth_effects']
 
@@ -911,7 +911,6 @@ def _effect_comparison_panels(axes, representative, t,
                     lw=2.0, alpha=0.85,
                     label=model_labels[tag])
 
-        # Analytical ground truth: thin dashed grey on top
         ax.plot(t, truth,
                 color='#888888', lw=1.4, ls='--',
                 dashes=(4, 3), label='Analytical', zorder=10)
@@ -951,10 +950,6 @@ def plot_effect_comparison(representative, t, n_values,
 # ===========================================================================
 
 def _aggregated_effects_panel(ax, representative, t):
-    """
-    Draw the grouped bar chart into an existing axes object.
-    Shared by standalone and combined figures.
-    """
     truth_agg = {
         S: float(np.trapezoid(representative['_truth_effects'][S], t))
         for S in REPORT_SUBSETS
@@ -1012,7 +1007,7 @@ def plot_aggregated_effects(representative, t):
 
 
 # ===========================================================================
-# 12b.  NEW — Fig 2+3 combined: effect curves (row 0) + bar chart (row 1)
+# 12b.  Fig 2+3 combined: effect curves (row 0) + bar chart (row 1)
 # ===========================================================================
 
 def plot_effects_combined(representative, t, n_values,
@@ -1020,11 +1015,7 @@ def plot_effects_combined(representative, t, n_values,
                           model_colors, model_ls,
                           report_subsets, subset_labels,
                           subset_colors, rep_n):
-    """
-    2-row figure:
-      Row 0: time-resolved effect curves (4 panels)
-      Row 1: time-aggregated bar chart   (1 wide panel)
-    """
+    import matplotlib.gridspec as gridspec
     n_cols = len(report_subsets)
 
     fig = plt.figure(figsize=(5.0 * n_cols, 10.5))
@@ -1035,7 +1026,6 @@ def plot_effects_combined(representative, t, n_values,
         fontsize=FS_SUPTITLE, fontweight='bold',
     )
 
-    import matplotlib.gridspec as gridspec
     gs = gridspec.GridSpec(
         2, n_cols, figure=fig,
         height_ratios=[1.0, 0.85],
@@ -1044,14 +1034,13 @@ def plot_effects_combined(representative, t, n_values,
         top=0.90, bottom=0.07,
     )
 
-    # ── Row 0: time-resolved panels ───────────────────────────────────
+    # Row 0: time-resolved panels
     axes_top = [fig.add_subplot(gs[0, c]) for c in range(n_cols)]
     _effect_comparison_panels(
         axes_top, representative, t,
         all_models, model_labels, model_colors, model_ls,
         report_subsets, subset_labels, subset_colors,
     )
-    # Row label
     axes_top[-1].text(
         1.03, 0.5, 'Time-resolved',
         transform=axes_top[-1].transAxes,
@@ -1059,7 +1048,7 @@ def plot_effects_combined(representative, t, n_values,
         rotation=270, color='gray',
     )
 
-    # ── Row 1: aggregated bar chart (spanning all columns) ────────────
+    # Row 1: aggregated bar chart (spanning all columns)
     ax_bar = fig.add_subplot(gs[1, :])
     _aggregated_effects_panel(ax_bar, representative, t)
     ax_bar.set_title(
@@ -1270,7 +1259,7 @@ def main():
 
     log.info('Generating figures ...')
 
-    # ── Standalone figures ─────────────────────────────────────────────
+    # Standalone figures
     plot_effect_comparison(
         rep, t_grid, n_values,
         plot_dir=PLOT_DIR,
@@ -1299,7 +1288,7 @@ def main():
     )
     plot_aggregated_effects(rep, t_grid)
 
-    # ── NEW combined figures ───────────────────────────────────────────
+    # Combined figures
     plot_n_recovery_combined(
         l2_errors, agg_errors, n_values, n_runs,
         plot_dir=PLOT_DIR,
