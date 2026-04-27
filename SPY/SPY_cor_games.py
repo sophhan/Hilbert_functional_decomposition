@@ -21,6 +21,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import matplotlib
+import matplotlib.ticker
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -764,6 +765,42 @@ def _add_kernel_legend(fig, fs, bbox=(0.01, 0.0)):
                framealpha=0.9, ncol=2)
 
 
+def _add_bottom_legends(fig, pnames, top_features, fs):
+    """
+    Two separate legends stacked vertically at the bottom-left:
+      top:    feature color legend
+      bottom: kernel linestyle legend (OU solid, Causal dashed)
+    """
+    feat_handles = [
+        Line2D([0], [0], color=FEAT_COLORS[pnames[fi]], lw=1.8, ls='-',
+               label=pnames[fi])
+        for fi in top_features
+    ]
+    kern_handles = [
+        Line2D([0], [0], color='#555', lw=1.8, ls='-',  label='OU kernel'),
+        Line2D([0], [0], color='#555', lw=1.8, ls='--', label='Causal kernel'),
+    ]
+    # Feature legend slightly higher
+    leg1 = fig.legend(
+        handles=feat_handles,
+        fontsize=fs.legend,
+        loc='lower left',
+        bbox_to_anchor=(0.04, 0.04),
+        framealpha=0.9,
+        ncol=len(feat_handles),
+    )
+    fig.add_artist(leg1)
+    # Kernel legend directly below
+    fig.legend(
+        handles=kern_handles,
+        fontsize=fs.legend,
+        loc='lower left',
+        bbox_to_anchor=(0.04, 0.0),
+        framealpha=0.9,
+        ncol=2,
+    )
+
+
 # ===========================================================================
 # 10.  PLOT 1 — Sensitivity + Risk (global, 4 rows x 4 cols)
 # ===========================================================================
@@ -843,10 +880,34 @@ def plot_sensitivity_risk_global(global_sens, global_risk, pnames,
                         fs=fs)
         _align_row_ylims([axes[r, c] for c in range(3)])
 
-    # Feature legend top-left, kernel legend below it
-    _add_fig_legend(fig, pnames, top_feats, fs=fs, bbox=(0.01, 0.995))
-    _add_kernel_legend(fig, fs=fs, bbox=(0.01, 0.96))
-    plt.tight_layout(rect=[0.04, 0, 1, 0.94])
+    # Fig1: feature legend and kernel legend stacked, small gap between them
+    feat_handles_f1 = [
+        Line2D([0], [0], color=FEAT_COLORS[pnames[fi]], lw=1.8, ls='-',
+               label=pnames[fi])
+        for fi in top_feats
+    ]
+    kern_handles_f1 = [
+        Line2D([0], [0], color='#555', lw=1.8, ls='-',  label='OU kernel'),
+        Line2D([0], [0], color='#555', lw=1.8, ls='--', label='Causal kernel'),
+    ]
+    leg1 = fig.legend(
+        handles=feat_handles_f1,
+        fontsize=fs.legend,
+        loc='lower left',
+        bbox_to_anchor=(0.04, 0.025),
+        framealpha=0.9,
+        ncol=len(feat_handles_f1),
+    )
+    fig.add_artist(leg1)
+    fig.legend(
+        handles=kern_handles_f1,
+        fontsize=fs.legend,
+        loc='lower left',
+        bbox_to_anchor=(0.04, 0.0),
+        framealpha=0.9,
+        ncol=2,
+    )
+    plt.tight_layout(rect=[0.04, 0.07, 1, 0.94])
     fig.subplots_adjust(hspace=0.65, top=0.92)
     return fig
 
@@ -926,9 +987,9 @@ def plot_local_prediction(moebius_hv, shapley_hv, pnames, fs=None):
         _draw_bar_panel(axes[r, 3], effect_dicts, kern_fn, pnames, sc, fs=fs)
         _align_row_ylims([axes[r, c] for c in range(3)])
 
-    _add_fig_legend(fig, pnames, top_feats, fs=fs, bbox=(0.01, 0.995))
-    _add_kernel_legend(fig, fs=fs, bbox=(0.01, 0.960))
-    plt.tight_layout(rect=[0.04, 0, 1, 0.91])
+    # Feature + kernel legend side by side at the bottom
+    _add_bottom_legends(fig, pnames, top_feats, fs=fs)
+    plt.tight_layout(rect=[0.04, 0.10, 1, 0.91])
     fig.subplots_adjust(hspace=0.65, top=0.88)
     return fig
 
@@ -942,15 +1003,20 @@ def plot_interactions(moebius_hv, pnames, fs=None):
     2 rows x 2 columns:
       row 0: identity kernel — interaction line plot | time-aggregated bar
       row 1: mixed kernel    — same (causal pairs dashed, OU pairs solid)
-    Pair color legend + kernel legend stacked at bottom-left.
+    Default font size. Pair + kernel legends side by side at bottom.
+    Reduced axes tick fontsize to prevent x-label overlap.
     """
     if fs is None:
         fs = _fs(0)
-    n_players  = len(pnames)
-    K_id       = kernel_identity(t_grid)
-    K_ou       = kernel_ou(t_grid, 8.0)
-    moebius    = moebius_hv['prediction']
-    sc         = _scale('prediction')
+    # Slightly smaller tick/axis labels to prevent time-axis overlap
+    ax_tick_fs  = max(fs.tick  - 2, 6)
+    ax_label_fs = max(fs.axis  - 1, 7)
+
+    n_players   = len(pnames)
+    K_id        = kernel_identity(t_grid)
+    K_ou        = kernel_ou(t_grid, 8.0)
+    moebius     = moebius_hv['prediction']
+    sc          = _scale('prediction')
     PAIR_COLORS = ['#e63946', '#2a9d8f', '#8338ec', '#fb8500', '#457b9d']
 
     pair_imp = {}
@@ -963,13 +1029,13 @@ def plot_interactions(moebius_hv, pnames, fs=None):
     fig, axes = plt.subplots(2, 2, figsize=(12, 4.2 * 2),
                              gridspec_kw={'width_ratios': [3, 1.8]})
     fig.suptitle(
-        r'Local pairwise interaction effects $m_{ij}(t)$ — top-5 pairs'
-        '\nHigh-VIX Announcement profile (2022-07-13) — Random Forest',
+        r'Local pairwise interaction effects $m_{ij}(t)$ -- top-5 pairs'
+        '\nHigh-VIX Announcement profile (2022-07-13) -- Random Forest',
         fontsize=fs.suptitle, fontweight='bold')
 
     inter_row_specs = [
-        (K_id,  'identity', 'Interactions — Identity kernel'),
-        (K_ou,  'mixed',    'Interactions — Mixed kernel (OU + causal)'),
+        (K_id, 'identity', 'Interactions -- Identity kernel'),
+        (K_ou, 'mixed',    'Interactions -- Mixed kernel (OU + causal)'),
     ]
 
     for r, (K_base, kkey, row_label) in enumerate(inter_row_specs):
@@ -984,16 +1050,20 @@ def plot_interactions(moebius_hv, pnames, fs=None):
             else:
                 K_use = K_id
                 ls    = '-'
-            curve = apply_kernel(raw, K_use) * sc
-            ax.plot(t_grid, curve, color=PAIR_COLORS[pair_idx], lw=1.8, ls=ls)
+            ax.plot(t_grid, apply_kernel(raw, K_use) * sc,
+                    color=PAIR_COLORS[pair_idx], lw=1.8, ls=ls)
         ax.axhline(0, color='gray', lw=0.5, ls=':')
-        _period_shade(ax); _ann_vline(ax); _set_time_axis(ax, sparse=True)
-        ax.tick_params(labelsize=fs.tick)
-        ax.set_xlabel('Time', fontsize=fs.axis)
-        ax.set_ylabel(GAME_YLABEL['prediction'], fontsize=fs.axis)
+        _period_shade(ax); _ann_vline(ax)
+        ax.set_xticks(XTICK_IDXS[::2])
+        ax.set_xticklabels(XTICK_LABELS[::2],
+                           rotation=45, ha='right', fontsize=ax_tick_fs)
+        ax.set_xlim(-0.5, T_BARS - 0.5)
+        ax.tick_params(labelsize=ax_tick_fs)
+        ax.set_xlabel('Time', fontsize=ax_label_fs)
+        ax.set_ylabel(GAME_YLABEL['prediction'], fontsize=ax_label_fs)
         ax.set_title(r'$m_{ij}(t)$', fontsize=fs.title, fontweight='bold')
         ax.text(-0.18, 0.5, row_label, transform=ax.transAxes,
-                fontsize=fs.axis - 1, va='center', ha='right',
+                fontsize=ax_label_fs - 1, va='center', ha='right',
                 rotation=90, color='#333', fontweight='bold')
         _align_row_ylims([axes[r, 0]])
 
@@ -1001,43 +1071,49 @@ def plot_interactions(moebius_hv, pnames, fs=None):
         pair_imps, pair_lbls = [], []
         for pair_idx, (i, j) in enumerate(top5):
             raw = moebius.get((i, j), np.zeros(T_BARS))
-            if kkey == 'mixed':
-                K_use = kernel_causal(t_grid, 8.0)                         if (i == fi_ann or j == fi_ann) else K_ou
-            else:
-                K_use = K_id
+            K_use = (kernel_causal(t_grid, 8.0)
+                     if (kkey == 'mixed' and (i == fi_ann or j == fi_ann))
+                     else (K_id if kkey == 'identity' else K_ou))
             pair_imps.append(
                 float(np.sum(np.abs(apply_kernel(raw, K_use)))) * sc)
             pair_lbls.append('{} x {}'.format(pnames[i], pnames[j]))
         y_pos = np.arange(len(top5))
         ax_bar.barh(y_pos, pair_imps, color=PAIR_COLORS[:len(top5)], alpha=0.85)
         ax_bar.set_yticks(y_pos)
-        ax_bar.set_yticklabels(pair_lbls, fontsize=fs.tick - 1)
-        ax_bar.set_xlabel(r'$\int|m_{ij}|\,dt$', fontsize=fs.axis)
+        ax_bar.set_yticklabels(pair_lbls, fontsize=ax_tick_fs - 1)
+        ax_bar.set_xlabel(r'$\int|m_{ij}|\,dt$', fontsize=ax_label_fs)
         ax_bar.spines['top'].set_visible(False)
         ax_bar.spines['right'].set_visible(False)
-        ax_bar.tick_params(labelsize=fs.tick)
+        ax_bar.tick_params(labelsize=ax_tick_fs)
         ax_bar.set_title('Time-aggregated', fontsize=fs.title, fontweight='bold')
 
-    # Legend 1 (top): pair colors — bottom-left
+    # Two stacked legends: pair colors on top, kernel linestyle below
     pair_handles = [
         Line2D([0], [0], color=PAIR_COLORS[k], lw=1.8,
                label='{} x {}'.format(pnames[i], pnames[j]))
         for k, (i, j) in enumerate(top5)]
-    leg1 = fig.legend(handles=pair_handles, fontsize=fs.legend,
-                      loc='lower left', ncol=len(top5),
-                      bbox_to_anchor=(0.04, 0.03), framealpha=0.9)
-    fig.add_artist(leg1)
-
-    # Legend 2 (below pairs): kernel linestyle — bottom-left, stacked
     kern_handles = [
         Line2D([0], [0], color='#555', lw=1.8, ls='-',  label='OU kernel'),
         Line2D([0], [0], color='#555', lw=1.8, ls='--', label='Causal kernel'),
     ]
-    fig.legend(handles=kern_handles, fontsize=fs.legend,
-               loc='lower left', ncol=2,
-               bbox_to_anchor=(0.04, -0.03), framealpha=0.9)
-
-    plt.tight_layout(rect=[0.04, 0.12, 1, 0.93])
+    leg1 = fig.legend(
+        handles=pair_handles,
+        fontsize=fs.legend,
+        loc='lower left',
+        bbox_to_anchor=(0.04, 0.04),
+        framealpha=0.9,
+        ncol=len(pair_handles),
+    )
+    fig.add_artist(leg1)
+    fig.legend(
+        handles=kern_handles,
+        fontsize=fs.legend,
+        loc='lower left',
+        bbox_to_anchor=(0.04, 0.0),
+        framealpha=0.9,
+        ncol=2,
+    )
+    plt.tight_layout(rect=[0.04, 0.10, 1, 0.93])
     fig.subplots_adjust(hspace=0.55, top=0.88)
     return fig
 
@@ -1095,6 +1171,12 @@ def _pdp_panel(ax, fi, etype, kern_fn, X_background,
             color='black', lw=2.5, ls='-', zorder=5, label='time-agg.')
     ax.axhline(0, color='gray', lw=0.5, ls=':')
     ax.tick_params(labelsize=fs.tick)
+    # Rotate x-tick labels and limit count to prevent overlap
+    ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=6, prune='both'))
+    for lbl in ax.get_xticklabels():
+        lbl.set_rotation(45)
+        lbl.set_ha('right')
+        lbl.set_fontsize(fs.tick)
     ax.set_xlabel(pnames[fi], fontsize=fs.axis)
 
 
@@ -1165,8 +1247,8 @@ def plot_global_prediction_pdp(per_instance_effects, global_pred,
                bbox_to_anchor=(0.5, 0.0),
                framealpha=0.9)
 
-    plt.tight_layout(rect=[0.04, 0.04, 1, 0.93])
-    fig.subplots_adjust(hspace=0.70, top=0.91)
+    plt.tight_layout(rect=[0.04, 0.06, 1, 0.93])
+    fig.subplots_adjust(hspace=0.80, top=0.91)
     return fig
 
 
@@ -1217,7 +1299,7 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
         2, 4, figsize=(19, 2.9 * 2),
         gridspec_kw={'width_ratios': [3, 3, 3, 1.8]})
     fig.suptitle(
-        'H-FD Framework: Kernel Choice and Effect Decomposition\n'
+        'Hilbert Functional Decomposition Framework: Kernel Choice and Effect Decomposition\n'
         'High-VIX Announcement Profile — Local Prediction',
         fontsize=FS_SUPTITLE, fontweight='bold')
 
@@ -1417,7 +1499,7 @@ if __name__ == '__main__':
         'fig3_global_prediction_pdp.pdf')
 
     savefig(
-        plot_interactions(moebius_hv, pnames, fs=_fs(3)),
+        plot_interactions(moebius_hv, pnames, fs=_fs(0)),
         'fig4_interactions.pdf')
 
     print('\n' + '=' * 60)
