@@ -479,7 +479,7 @@ def _run_or_load(predict_fn, X_bg, Y_adj, x_inst, game_type,
 
 
 def compute_global_effects(ds, game_type, n_instances, sample_size, seed):
-    """Average pure/partial/full over n_instances, using per-instance cache."""
+    """Average pure/partial/full and pairwise Möbius terms over n_instances."""
     _require_dir(GAME_CACHE_DIR)
     X_bg = ds['X_np']; Y_adj = ds['Y_adj']
     T = ds['T']; features = ds['features']; n_players = len(features)
@@ -488,22 +488,30 @@ def compute_global_effects(ds, game_type, n_instances, sample_size, seed):
     sum_shap = {i: np.zeros(T) for i in range(n_players)}
     sum_pure = {i: np.zeros(T) for i in range(n_players)}
     sum_full = {i: np.zeros(T) for i in range(n_players)}
+    # Accumulate pairwise Möbius terms for global edge weights
+    sum_pairs = {(i,j): np.zeros(T)
+                 for i in range(n_players) for j in range(i+1, n_players)}
     for k, idx in enumerate(idxs):
         cache = _cache_path_global(ds['tag'], game_type, k)
         x_inst = X_bg[idx]
-        _, pure, shap, full, _ = _run_or_load(
+        _, pure, shap, full, mob = _run_or_load(
             ds['model'].predict, X_bg, Y_adj,
             x_inst, game_type, sample_size, seed+k, cache, features, T)
         for i in range(n_players):
             sum_shap[i] += shap[i]
             sum_pure[i] += pure[i]
             sum_full[i] += full[i]
+        for i in range(n_players):
+            for j in range(i+1, n_players):
+                sum_pairs[(i,j)] += mob.get((i,j), np.zeros(T))
         status = '(cached)' if os.path.isfile(cache) else ''
         print('    [{} {} global] {}/{} {}'.format(
             ds['tag'], game_type, k+1, n_instances, status))
+    avg_pairs = {k: v/n_instances for k, v in sum_pairs.items()}
     return ({i: sum_shap[i]/n_instances for i in range(n_players)},
             {i: sum_pure[i]/n_instances for i in range(n_players)},
-            {i: sum_full[i]/n_instances for i in range(n_players)})
+            {i: sum_full[i]/n_instances for i in range(n_players)},
+            avg_pairs)
 
 
 def compute_local_game(ds, x_profile, label):
@@ -700,6 +708,30 @@ def _network_importances(mob, shap, p, T, K, effect_type='partial'):
             if abs(val) > 0: edge_imp[(i,j)] = val
     return node_imp, edge_imp, node_sign
 
+def _network_importances_global(avg_shap, avg_pure, avg_full, avg_pairs,
+                                 p, T, K, effect_type='full'):
+    """Compute network node/edge importances from global averaged effects."""
+    if effect_type == 'pure':
+        eff = avg_pure
+    elif effect_type == 'partial':
+        eff = avg_shap
+    else:
+        eff = avg_full
+    t_grid = np.arange(T, dtype=float)
+    node_imp  = np.array([float(np.sum(np.abs(apply_kernel(eff[i], K))))
+                          for i in range(p)])
+    node_sign = np.array([np.sign(float(np.trapz(apply_kernel(eff[i], K), t_grid)))
+                          for i in range(p)])
+    edge_imp = {}
+    for i in range(p):
+        for j in range(i+1, p):
+            raw = avg_pairs.get((i,j), np.zeros(T))
+            val = float(np.trapz(apply_kernel(raw, K), t_grid))
+            if abs(val) > 0:
+                edge_imp[(i,j)] = val
+    return node_imp, edge_imp, node_sign
+
+
 def _draw_network(ax, features, node_imp, edge_imp, node_sign,
                   title, fs_title=None):
     import math
@@ -710,7 +742,7 @@ def _draw_network(ax, features, node_imp, edge_imp, node_sign,
     ax.set_aspect('equal'); ax.axis('off')
     if title: ax.set_title(title, fontsize=fs_t, fontweight='bold', pad=4)
     max_imp  = float(node_imp.max()) if node_imp.max() > 0 else 1.0
-    node_r   = {i: 0.07 + 0.19*(node_imp[i]/max_imp) for i in range(p)}
+    node_r   = {i: 0.09 + 0.23*(node_imp[i]/max_imp) for i in range(p)}
     max_edge = max((abs(v) for v in edge_imp.values()), default=1.0)
     max_edge = max(max_edge, 1e-12)
     for (i,j), val in edge_imp.items():
@@ -729,9 +761,9 @@ def _draw_network(ax, features, node_imp, edge_imp, node_sign,
                                 zorder=3, alpha=0.95))
         abbr = FEAT_ABBR.get(features[i], features[i][:3])
         ax.text(x, y, abbr, ha='center', va='center',
-                fontsize=max(4.5, r*22), fontweight='bold',
+                fontsize=max(7.0, r*34), fontweight='bold',
                 color='#222', zorder=4)
-    pad = 0.32
+    pad = 0.36
     ax.set_xlim(-1.0-pad, 1.0+pad); ax.set_ylim(-1.0-pad, 1.0+pad)
 
 
@@ -813,18 +845,21 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
     _heatmap(ax_ih_heat, ds_ih, K_ih, 'ihepc')
     _heatmap(ax_ne_heat, ds_ne, K_ne, 'neso')
 
-    # ── Sensitivity networks (partial, correlation kernel) ─────────────
+    # ── Sensitivity networks (full/total Sobol, correlation kernel) ───────
     net_handles = [Patch(facecolor=_NODE_POS, edgecolor='none', label='Positive'),
                    Patch(facecolor=_NODE_NEG, edgecolor='none', label='Negative')]
-    for ax, mob, shap, ds, tag in [
-        (ax_ih_net, mob_ih['sensitivity'], shap_ih['sensitivity'], ds_ih, 'ihepc'),
-        (ax_ne_net, mob_ne['sensitivity'], shap_ne['sensitivity'], ds_ne, 'neso'),
+    for ax, ds, tag in [
+        (ax_ih_net, ds_ih, 'ihepc'),
+        (ax_ne_net, ds_ne, 'neso'),
     ]:
         features = ds['features']; p, T = len(features), ds['T']
         K = K_ih if tag == 'ihepc' else K_ne
-        ni, ei, ns = _network_importances(mob, shap, p, T, K, 'partial')
+        g_sens = global_sens_ih if tag == 'ihepc' else global_sens_ne
+        avg_shap, avg_pure, avg_full, avg_pairs = g_sens
+        ni, ei, ns = _network_importances_global(
+            avg_shap, avg_pure, avg_full, avg_pairs, p, T, K, 'full')
         _draw_network(ax, features, ni, ei, ns,
-                      '{} sens.\npartial (corr)'.format(tag.upper()),
+                      '{} sens.\nfull (corr)'.format(tag.upper()),
                       fs_title=FS_T)
         ax.legend(handles=net_handles, loc='lower center', ncol=2,
                   fontsize=FS_LEG-1.5, framealpha=0.88,
@@ -878,25 +913,25 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
                   bbox_to_anchor=(0.5,-0.22), ncol=3, framealpha=0.85)
         _shade(ax, ds)
 
-    def _sens_partial_panel(ax, ds, global_sens, K_corr, K_id, tag,
-                             force_features=None):
-        """Show global Shapley-sensitivity partial effect for 1-2 features:
+    def _sens_full_panel(ax, ds, global_sens, K_corr, K_id, tag,
+                          force_features=None):
+        """Show global total-Sobol (full) sensitivity effect for 1-2 features:
         identity kernel faded, correlation kernel full opacity."""
         features = ds['features']; p, T = len(features), ds['T']
         t_grid = ds['t_grid']
-        avg_shap = global_sens[0]  # partial (Shapley-sensitivity)
+        avg_full = global_sens[2]  # full (total Sobol)
         if force_features is None:
-            # Pick highest-importance feature under correlation kernel
-            imps = {i: float(np.sum(np.abs(apply_kernel(avg_shap[i], K_corr))))
+            imps = {i: float(np.sum(np.abs(apply_kernel(avg_full[i], K_corr))))
                     for i in range(p)}
-            fis = [max(imps, key=imps.get)]
+            # top-2 by global full importance
+            fis = sorted(imps, key=imps.get, reverse=True)[:2]
         else:
             fis = [features.index(f) for f in force_features]
 
         for fi in fis:
             col      = FEAT_COLORS[features[fi]]
-            eff_id   = apply_kernel(avg_shap[fi], K_id)
-            eff_corr = apply_kernel(avg_shap[fi], K_corr)
+            eff_id   = apply_kernel(avg_full[fi], K_id)
+            eff_corr = apply_kernel(avg_full[fi], K_corr)
             ls = '-' if fi == fis[0] else '--'
             ax.plot(t_grid, eff_id, color=col, lw=ID_LW, ls=ls,
                     alpha=ID_ALPHA, zorder=2)
@@ -907,7 +942,6 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
         _xticks(ax, ds, sparse=True)
         ax.tick_params(labelsize=FS_TK)
         ax.set_xlabel('Time', fontsize=FS_AX)
-        # Suppress scientific notation offset; fold scale into label
         if tag == 'neso':
             ax.yaxis.set_major_formatter(
                 matplotlib.ticker.FuncFormatter(
@@ -918,10 +952,9 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
         ax.set_ylabel(ylabel, fontsize=FS_AX)
         feat_str = ', '.join(features[fi] for fi in fis)
         ax.set_title(
-            r'Partial $\phi_i$ = Shapley-sens. — corr. kernel' + '\n'
+            r'Full $\Phi_i$ = Total Sobol — corr. kernel' + '\n'
             '{} — {}'.format(DS_LABEL[tag].split('\n')[0], feat_str),
             fontsize=FS_T-1, fontweight='bold', color=DS_COLOR[tag])
-        # Build legend: corr lines + one faded identity line
         corr_handles = [
             Line2D([0],[0], color=FEAT_COLORS[features[fi]],
                    lw=MX_LW, ls='-' if fi == fis[0] else '--',
@@ -937,10 +970,10 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
 
     K_id_ih = kernel_identity(ds_ih['T'])
     K_id_ne = kernel_identity(ds_ne['T'])
-    _sens_partial_panel(ax_ih_gap, ds_ih, global_sens_ih, K_ih, K_id_ih,
-                        'ihepc', force_features=['lag_daily_mean', 'lag_morning'])
-    _sens_partial_panel(ax_ne_gap, ds_ne, global_sens_ne, K_ne, K_id_ne,
-                        'neso',  force_features=['month', 'season'])
+    _sens_full_panel(ax_ih_gap, ds_ih, global_sens_ih, K_ih, K_id_ih,
+                     'ihepc', force_features=None)
+    _sens_full_panel(ax_ne_gap, ds_ne, global_sens_ne, K_ne, K_id_ne,
+                     'neso',  force_features=['month', 'season'])
 
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
@@ -1019,7 +1052,7 @@ def fig1_global_risk_sensitivity(ds, global_effects, fs=None):
 
     top_k = 5; top_feats = None
     for r, (gtype, K, klabel, eff_labels, row_title) in enumerate(row_specs):
-        avg_shap, avg_pure, avg_full = global_effects[gtype]
+        avg_shap, avg_pure, avg_full, _ = global_effects[gtype]
         effect_dicts = {'pure':avg_pure, 'partial':avg_shap, 'full':avg_full}
         imps = {i: float(np.sum(np.abs(apply_kernel(avg_shap[i], K))))
                 for i in range(p)}
@@ -1430,37 +1463,13 @@ def fig5_networks_global(ds_ih, ds_ne, global_ih, global_ne, K_ih, K_ne):
 
     for r, (ds, g_eff, gtype, K, row_label) in enumerate(row_specs):
         features = ds['features']; p = len(features); T = ds['T']
-        avg_shap, avg_pure, avg_full = g_eff[gtype]
-
-        # Build pseudo-mob from global averages for network
-        # (we only need partial for the network display)
-        pseudo_shap = avg_shap
-        pseudo_mob  = {(i,): avg_pure[i] for i in range(p)}
-        pseudo_mob[()] = np.zeros(T)
+        avg_shap, avg_pure, avg_full, avg_pairs = g_eff[gtype]
 
         for c, etype in enumerate(_EFFECT_TYPES):
             ax = fig.add_subplot(gs[r, c])
-            if etype == 'pure':
-                eff = avg_pure
-            elif etype == 'partial':
-                eff = avg_shap
-            else:
-                eff = avg_full
-            t_grid   = np.arange(T, dtype=float)
-            node_imp = np.array([float(np.sum(np.abs(apply_kernel(eff[i], K))))
-                                 for i in range(p)])
-            node_sign= np.array([np.sign(float(np.trapz(
-                apply_kernel(eff[i], K), t_grid))) for i in range(p)])
-            # Edge importance: use global partial shap for pairwise
-            edge_imp = {}
-            for i in range(p):
-                for j in range(i+1, p):
-                    # Use product of node importances as proxy for edge
-                    val = float(np.trapz(
-                        apply_kernel(eff[i], K) * apply_kernel(eff[j], K),
-                        t_grid))
-                    if abs(val) > 0: edge_imp[(i,j)] = val
-            _draw_network(ax, features, node_imp, edge_imp, node_sign,
+            ni, ei, ns = _network_importances_global(
+                avg_shap, avg_pure, avg_full, avg_pairs, p, T, K, etype)
+            _draw_network(ax, features, ni, ei, ns,
                           col_labels[c] if r == 0 else '',
                           fs_title=FS_TITLE)
             if c == 0:
@@ -1482,6 +1491,185 @@ def fig5_networks_global(ds_ih, ds_ne, global_ih, global_ne, K_ih, K_ne):
 # ===========================================================================
 # 18.  Main
 # ===========================================================================
+
+
+
+# ===========================================================================
+# 18b.  FIG 0 ALT — Two-row: IHEPC row 1, NESO row 2 (3 cols each)
+# ===========================================================================
+
+def fig0_two_row(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
+                 K_ih, K_ne, global_sens_ih, global_sens_ne):
+    """
+    2 rows x 3 cols:
+      row 0: IHEPC heatmap | IHEPC sens. network (full) | IHEPC total Sobol panel
+      row 1: NESO  heatmap | NESO  sens. network (full) | NESO  total Sobol panel
+    """
+    FS_SUP=21; FS_T=17; FS_AX=16; FS_TK=14; FS_LEG=14
+    ID_ALPHA=0.40; ID_LW=1.8; MX_LW=2.6
+
+    fig = plt.figure(figsize=(20, 14))
+    gs  = GridSpec(2, 3, figure=fig,
+                   width_ratios=[1.4, 2.0, 1.8],
+                   wspace=0.10, hspace=0.70,
+                   left=0.05, right=0.97,
+                   top=0.83, bottom=0.10)
+
+    axes = [[fig.add_subplot(gs[r, c]) for c in range(3)] for r in range(2)]
+
+    fig.suptitle(
+        'Energy demand: correlation structure drives explanation shape\n'
+        'UCI IHEPC (single household, kW)  vs  NESO GB Demand (national grid, MW)',
+        fontsize=FS_SUP, fontweight='bold', y=0.96)
+
+    def _heatmap(ax, ds, K, tag):
+        T, tl = ds['T'], ds['tlabels']
+        step  = max(1, T//6); ticks = list(range(0, T, step))
+        im = ax.imshow(K, aspect='equal', origin='upper',
+                       cmap='RdBu_r', vmin=-0.2, vmax=1.0)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([tl[i] for i in ticks],
+                           rotation=45, ha='right', fontsize=FS_TK)
+        ax.set_yticks(ticks)
+        ax.set_yticklabels([tl[i] for i in ticks], fontsize=FS_TK-0.5)
+        ax.set_title(DS_LABEL[tag].replace('\n',' ') + '\ncorrelation kernel $K$',
+                     fontsize=FS_AX, fontweight='bold', color=DS_COLOR[tag])
+        am = (ds['morning'][0]+ds['morning'][1])//2
+        ax.axhline(am, color='white', lw=0.8, ls='--', alpha=0.6)
+        ax.axvline(am, color='white', lw=0.8, ls='--', alpha=0.6)
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.03).ax.tick_params(labelsize=FS_TK-0.5)
+
+    _heatmap(axes[0][0], ds_ih, K_ih, 'ihepc')
+    _heatmap(axes[1][0], ds_ne, K_ne, 'neso')
+
+    net_handles = [Patch(facecolor=_NODE_POS, edgecolor='none', label='Positive'),
+                   Patch(facecolor=_NODE_NEG, edgecolor='none', label='Negative')]
+    for row_idx, (ax, ds, tag) in enumerate([
+        (axes[0][1], ds_ih, 'ihepc'),
+        (axes[1][1], ds_ne, 'neso'),
+    ]):
+        features = ds['features']; p, T = len(features), ds['T']
+        K = K_ih if tag == 'ihepc' else K_ne
+        g_sens = global_sens_ih if tag == 'ihepc' else global_sens_ne
+        avg_shap, avg_pure, avg_full, avg_pairs = g_sens
+        ni, ei, ns = _network_importances_global(
+            avg_shap, avg_pure, avg_full, avg_pairs, p, T, K, 'full')
+        _draw_network(ax, features, ni, ei, ns,
+                      '{} sens.\nfull (corr)'.format(tag.upper()),
+                      fs_title=FS_T)
+        ax.legend(handles=net_handles, loc='lower center', ncol=2,
+                  fontsize=FS_LEG-1.5, framealpha=0.88,
+                  bbox_to_anchor=(0.5,-0.12), bbox_transform=ax.transAxes,
+                  borderpad=0.4, handlelength=1.2)
+
+    def _sens_full_panel_row(ax, ds, global_sens, K_corr, K_id, tag,
+                              force_features):
+        features = ds['features']; p, T = len(features), ds['T']
+        t_grid = ds['t_grid']
+        avg_full = global_sens[2]
+        if force_features is None:
+            imps = {i: float(np.sum(np.abs(apply_kernel(avg_full[i], K_corr))))
+                    for i in range(p)}
+            fis = sorted(imps, key=imps.get, reverse=True)[:2]
+        else:
+            fis = [features.index(f) for f in force_features]
+        for fi in fis:
+            col    = FEAT_COLORS[features[fi]]
+            eff_id = apply_kernel(avg_full[fi], K_id)
+            eff_co = apply_kernel(avg_full[fi], K_corr)
+            ls = '-' if fi == fis[0] else '--'
+            ax.plot(t_grid, eff_id, color=col, lw=ID_LW, ls=ls,
+                    alpha=ID_ALPHA, zorder=2)
+            ax.plot(t_grid, eff_co, color=col, lw=MX_LW, ls=ls,
+                    label=features[fi] + ' (corr.)', zorder=3)
+        ax.axhline(0, color='gray', lw=0.5, ls=':')
+        _xticks(ax, ds, sparse=True)
+        ax.tick_params(labelsize=FS_TK)
+        ax.set_xlabel('Time', fontsize=FS_AX)
+        if tag == 'neso':
+            ax.yaxis.set_major_formatter(
+                matplotlib.ticker.FuncFormatter(
+                    lambda v, _: '{:.2f}'.format(v / 1e7)))
+            ylabel = r'Var$[F(t)]$ (MW$^2$, $\times 10^7$)'
+        else:
+            ylabel = ds['ylabel']['sensitivity']
+        ax.set_ylabel(ylabel, fontsize=FS_AX)
+        feat_str = ', '.join(features[fi] for fi in fis)
+        ax.set_title(
+            r'Full $\Phi_i$ = Total Sobol — corr. kernel' + '\n'
+            '{} — {}'.format(DS_LABEL[tag].split('\n')[0], feat_str),
+            fontsize=FS_T-1, fontweight='bold', color=DS_COLOR[tag])
+        corr_handles = [
+            Line2D([0],[0], color=FEAT_COLORS[features[fi]],
+                   lw=MX_LW, ls='-' if fi == fis[0] else '--',
+                   label=features[fi] + ' (corr.)')
+            for fi in fis]
+        extra_id = Line2D([0],[0], color='gray', lw=ID_LW, ls='-',
+                          alpha=ID_ALPHA, label='identity (faded)')
+        ax.legend(handles=corr_handles + [extra_id],
+                  fontsize=FS_LEG, loc='upper center',
+                  bbox_to_anchor=(0.5, -0.22), ncol=len(fis)+1,
+                  framealpha=0.85)
+        _shade(ax, ds)
+
+    K_id_ih = kernel_identity(ds_ih['T'])
+    K_id_ne = kernel_identity(ds_ne['T'])
+    _sens_full_panel_row(axes[0][2], ds_ih, global_sens_ih, K_ih, K_id_ih,
+                         'ihepc', None)
+    _sens_full_panel_row(axes[1][2], ds_ne, global_sens_ne, K_ne, K_id_ne,
+                         'neso',  ['month', 'season'])
+
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+
+    # Compute row bounding boxes
+    row_bbs = []
+    for axlist in [axes[0], axes[1]]:
+        xmins, ymins, xmaxs, ymaxs = [], [], [], []
+        for ax in axlist:
+            bb = ax.get_window_extent(renderer=renderer)
+            bb_fig = bb.transformed(fig.transFigure.inverted())
+            xmins.append(bb_fig.x0); ymins.append(bb_fig.y0)
+            xmaxs.append(bb_fig.x1); ymaxs.append(bb_fig.y1)
+        row_bbs.append((min(xmins), min(ymins), max(xmaxs), max(ymaxs)))
+
+    # Midpoint between IHEPC row bottom and NESO row top
+    ih_y0 = row_bbs[0][1]  # IHEPC axes bottom
+    ne_y1 = row_bbs[1][3]  # NESO axes top
+    y_mid = 0.5 * (ih_y0 + ne_y1)
+
+    pad = 0.016
+    eb_ih = 0.12  # IHEPC extra_bottom
+    eb_ne = 0.08  # NESO  extra_bottom
+    et_ih = 0.05  # IHEPC extra_top: lower upper edge of green box
+    et_ne = 0.11  # NESO  extra_top
+
+    for row_idx, (axlist, color) in enumerate([
+        (axes[0], DS_COLOR['ihepc']),
+        (axes[1], DS_COLOR['neso']),
+    ]):
+        rx0, ry0, rx1, ry1 = row_bbs[row_idx]
+        bx0 = rx0 - pad - 0.03
+        et  = et_ih if row_idx == 0 else et_ne
+        eb  = eb_ih if row_idx == 0 else eb_ne
+        bx1 = rx1 + pad + 0.02
+        by0_raw = ry0 - pad - eb
+        by1_raw = ry1 + pad + et
+        # Clip so boxes don't overlap: IHEPC box bottom ≥ y_mid, NESO box top ≤ y_mid
+        if row_idx == 0:  # IHEPC — clip bottom to y_mid
+            by0 = max(by0_raw, y_mid + 0.008)
+            by1 = by1_raw
+        else:             # NESO — clip top to y_mid
+            by0 = by0_raw
+            by1 = min(by1_raw, y_mid - 0.008)
+        rect = FancyBboxPatch((bx0, by0), bx1-bx0, by1-by0,
+                              boxstyle='round,pad=0.006',
+                              linewidth=1.4, edgecolor=color, facecolor=color,
+                              alpha=0.10, transform=fig.transFigure,
+                              zorder=0, clip_on=False)
+        fig.add_artist(rect)
+    return fig
+
 
 if __name__ == '__main__':
     print('\n'+'='*60)
@@ -1575,6 +1763,13 @@ if __name__ == '__main__':
                        global_sens_ih=global_ih['sensitivity'],
                        global_sens_ne=global_ne['sensitivity']),
         'fig0_main_body.pdf')
+
+    savefig(
+        fig0_two_row(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
+                     K_ih, K_ne,
+                     global_sens_ih=global_ih['sensitivity'],
+                     global_sens_ne=global_ne['sensitivity']),
+        'fig0_two_row.pdf')
 
     for ds, global_eff, tag in [
         (ds_ih, global_ih, 'ihepc'),
