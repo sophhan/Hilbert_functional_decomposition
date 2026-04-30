@@ -1,18 +1,16 @@
 """
 Functional Explanation Framework -- Intraday SPY Volatility (Random Forest)
 ============================================================================
-v5 changes vs v4:
-  - Game result caching: results saved to game_results/ as .npz per instance;
-    on re-run plots are regenerated without recomputing games if cache exists.
-    Bump CACHE_VERSION to force recomputation.
-  - fig2 interaction rows: up to 5 pairs plotted as lines per panel (same
-    pairs across pure/partial/full columns).
-  - Nomenclature: local prediction titles have no XAI equivalences; global
-    prediction keeps "= PDP" / "= global SHAP"; sensitivity/risk keep their
-    equivalences. All use plain "=" not the equiv sign.
-  - Bar panel titles: "Time-aggregated" (not "Integrated").
-  - Y-axes: aligned within each row only (cols 0-2), never across rows.
-  - Plot 3: 3 columns only, no bar panel.
+v7 changes vs v6:
+  - Math notation stripped from all plot labels (figs 0-4):
+      * _LOCAL_PRED_LABELS, _GLOBAL_PRED_LABELS: plain prose
+      * plot_interactions: suptitle, panel title, bar xlabel
+      * plot_main_body_summary: column titles, interaction panel title;
+        inline integral annotation kept (it labels a specific number)
+  - _draw_bar_panel: three shades of feature color (light/medium/dark)
+    for pure/partial/full; hatches removed; legend uses grey swatches.
+  - fig0 suptitle: matches energy-demand framing.
+  - fig2/3/4 suptitles: aligned with energy-demand counterparts.
 """
 
 import itertools
@@ -21,11 +19,13 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import matplotlib
+import matplotlib.colors as mcolors
 import matplotlib.ticker
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
@@ -34,7 +34,7 @@ from sklearn.model_selection import train_test_split
 # ---------------------------------------------------------------------------
 # 0.  Settings
 # ---------------------------------------------------------------------------
-CACHE_VERSION = 'v5'          # bump to force recomputation of all games (unchanged)
+CACHE_VERSION = 'v5'
 
 _HERE          = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR       = os.path.join(_HERE, 'data')
@@ -58,7 +58,8 @@ SAMPLE_SIZE = {
 
 GLOBAL_N_INSTANCES = 30
 GLOBAL_SAMPLE_SIZE = 100
-N_FEAT_BINS        = 20      # bins for PDP-style global prediction plots
+N_FEAT_BINS        = 20
+PDP_N_INSTANCES    = 120
 
 _open_min  = 9 * 60 + 30
 BAR_LABELS = [
@@ -104,6 +105,22 @@ ANNOUNCEMENT_DATES = {
 }
 
 # ===========================================================================
+# 0b.  Color shading helper (bar plots: light/medium/dark per feature color)
+# ===========================================================================
+
+def _shade_color(c, factor):
+    """factor > 0: lighten toward white; factor < 0: darken toward black."""
+    r, g, b = mcolors.to_rgb(c)
+    if factor >= 0:
+        return (r + (1.0 - r) * factor,
+                g + (1.0 - g) * factor,
+                b + (1.0 - b) * factor)
+    else:
+        f = -factor
+        return (r * (1.0 - f), g * (1.0 - f), b * (1.0 - f))
+
+
+# ===========================================================================
 # 1.  Cache helpers
 # ===========================================================================
 
@@ -111,21 +128,22 @@ def _require_dir(path):
     os.makedirs(path, exist_ok=True)
 
 def _cache_path_global(game_type, instance_k):
-    """Path for one global instance cache file."""
     return os.path.join(
         GAME_CACHE_DIR,
         'global_{}_inst{:04d}_{}.npz'.format(game_type, instance_k, CACHE_VERSION))
 
 def _cache_path_local(label):
-    """Path for local game cache (one per profile label)."""
     safe = label.replace(' ', '_').replace('-', '_')
     return os.path.join(
         GAME_CACHE_DIR,
         'local_prediction_{}_{}.npz'.format(safe, CACHE_VERSION))
 
+def _cache_path_pdp(instance_k):
+    return os.path.join(
+        GAME_CACHE_DIR,
+        'pdp_spy_inst{:04d}_{}.npz'.format(instance_k, CACHE_VERSION))
+
 def _save_instance_cache(path, x_inst, pure, partial, full, moebius, n_players):
-    """Save one instance's effects + full Möbius dict to .npz."""
-    # Flatten moebius dict: key "(i,j,...)" -> array
     mob_keys   = []
     mob_arrays = []
     for S, arr in moebius.items():
@@ -144,7 +162,6 @@ def _save_instance_cache(path, x_inst, pure, partial, full, moebius, n_players):
     )
 
 def _load_instance_cache(path, n_players):
-    """Load one instance cache; return (x, pure, partial, full, moebius)."""
     d = np.load(path, allow_pickle=True)
     x_inst  = d['x_inst']
     pure    = {i: d['pure_{}'.format(i)]    for i in range(n_players)}
@@ -156,16 +173,13 @@ def _load_instance_cache(path, n_players):
     for idx in range(n_mob):
         key_str = mob_keys[idx]
         arr     = d['mob_{}'.format(idx)]
-        if key_str == 'empty':
-            S = ()
-        else:
-            S = tuple(int(x) for x in key_str.split('_'))
+        S = () if key_str == 'empty' else tuple(int(x) for x in key_str.split('_'))
         moebius[S] = arr
     return x_inst, pure, partial, full, moebius
 
 
 # ===========================================================================
-# 2.  Data loading
+# 2.  Data loading  (unchanged from v6)
 # ===========================================================================
 
 def _validate_bars(bars):
@@ -444,7 +458,6 @@ def apply_kernel(effect, K):
     return _normalize_kernel(K) @ effect * dt
 
 def get_feature_kernel(fi, pnames):
-    """Return (ktype_label, K) under the mixed kernel."""
     if pnames[fi] == 'ann_indicator':
         return ('causal', kernel_causal(t_grid, length_scale=8.0))
     return ('ou', kernel_ou(t_grid, length_scale=8.0))
@@ -475,18 +488,12 @@ def _full_effects(moebius, n_players):
 def _run_or_load_instance(predict_fn, X_background, Y_adj,
                            x_inst, game_type, sample_size,
                            random_seed, cache_path, n_players):
-    """
-    Run FunctionalGame for one instance and cache, or load from cache.
-    Returns (x_inst, pure, partial, full, moebius).
-    """
     if os.path.isfile(cache_path):
         return _load_instance_cache(cache_path, n_players)
-
     y_inst = None
     if game_type == 'risk':
         diffs  = np.abs(X_background - x_inst[None, :]).sum(axis=1)
         y_inst = Y_adj[int(np.argmin(diffs))]
-
     game = FunctionalGame(
         predict_fn   = predict_fn,
         X_background = X_background,
@@ -507,22 +514,15 @@ def _run_or_load_instance(predict_fn, X_background, Y_adj,
 
 def compute_global_effects(predict_fn, X_background, Y_adj,
                             game_type, n_instances, sample_size, seed):
-    """
-    Average pure/partial/full effects over n_instances randomly drawn
-    instances, using per-instance cache files.
-    Returns (avg_shapley, avg_pure, avg_full).
-    """
     _require_dir(GAME_CACHE_DIR)
     rng  = np.random.default_rng(seed)
     idxs = rng.choice(len(X_background), size=n_instances, replace=False)
     n_players = len(DAY_FEATURE_NAMES)
-
     sum_shapley = {i: np.zeros(T_BARS) for i in range(n_players)}
     sum_pure    = {i: np.zeros(T_BARS) for i in range(n_players)}
     sum_full    = {i: np.zeros(T_BARS) for i in range(n_players)}
-
     for k, idx in enumerate(idxs):
-        cache = _cache_path_global(game_type, k)
+        cache  = _cache_path_global(game_type, k)
         x_inst = X_background[idx]
         _, pure, shap, full, _ = _run_or_load_instance(
             predict_fn, X_background, Y_adj,
@@ -535,7 +535,6 @@ def compute_global_effects(predict_fn, X_background, Y_adj,
         cached = '(cached)' if os.path.isfile(cache) else ''
         print('    global {} instance {}/{} {}'.format(
             game_type, k + 1, n_instances, cached))
-
     avg_shapley = {i: sum_shapley[i] / n_instances for i in range(n_players)}
     avg_pure    = {i: sum_pure[i]    / n_instances for i in range(n_players)}
     avg_full    = {i: sum_full[i]    / n_instances for i in range(n_players)}
@@ -543,19 +542,13 @@ def compute_global_effects(predict_fn, X_background, Y_adj,
 
 
 def compute_local_prediction(predict_fn, X_background, x_hv, label):
-    """
-    Compute local prediction game for the High-VIX profile, with caching.
-    Returns (moebius, shapley).
-    """
     _require_dir(GAME_CACHE_DIR)
     n_players  = len(DAY_FEATURE_NAMES)
     cache_path = _cache_path_local(label)
-
     if os.path.isfile(cache_path):
         print('  Loading local prediction cache for "{}" ...'.format(label))
         _, pure, shap, full, mob = _load_instance_cache(cache_path, n_players)
         return mob, shap
-
     print('  Computing local prediction game for "{}" ...'.format(label))
     game = FunctionalGame(
         predict_fn   = predict_fn,
@@ -576,11 +569,6 @@ def compute_local_prediction(predict_fn, X_background, x_hv, label):
 
 def load_per_instance_effects(predict_fn, X_background, Y_adj,
                                glob_idxs, seed):
-    """
-    Load or compute per-instance prediction effects for the PDP plot.
-    Uses the same cache files as compute_global_effects with game_type='prediction'.
-    Returns list of dicts: {'x', 'pure', 'partial', 'full'}.
-    """
     _require_dir(GAME_CACHE_DIR)
     n_players = len(DAY_FEATURE_NAMES)
     results   = []
@@ -594,6 +582,36 @@ def load_per_instance_effects(predict_fn, X_background, Y_adj,
         results.append({'x': x_inst, 'pure': pure, 'partial': shap, 'full': full})
         print('    per-instance pred {}/{}'.format(k + 1, len(glob_idxs)))
     return results
+
+
+def load_per_instance_effects_pdp(predict_fn, X_background, Y_adj, seed):
+    _require_dir(GAME_CACHE_DIR)
+    n_players  = len(DAY_FEATURE_NAMES)
+    month_col  = DAY_FEATURE_NAMES.index('month')
+    selected = []
+    for m in range(1, 13):
+        candidates = np.where(X_background[:, month_col] == m)[0]
+        if len(candidates) > 0:
+            rng_m = np.random.default_rng(seed + m)
+            selected.append(int(rng_m.choice(candidates)))
+    rng  = np.random.default_rng(seed)
+    pool = np.setdiff1d(np.arange(len(X_background)), selected)
+    rng.shuffle(pool)
+    n_extra = PDP_N_INSTANCES - len(selected)
+    if n_extra > 0:
+        selected = selected + pool[:n_extra].tolist()
+    idxs = np.array(selected[:PDP_N_INSTANCES])
+    results = []
+    for k, idx in enumerate(idxs):
+        cache  = _cache_path_pdp(k)
+        x_inst = X_background[idx]
+        _, pure, shap, full, _ = _run_or_load_instance(
+            predict_fn, X_background, Y_adj,
+            x_inst, 'prediction', SAMPLE_SIZE['prediction'],
+            seed + k, cache, n_players)
+        results.append({'x': x_inst, 'pure': pure, 'partial': shap, 'full': full})
+        print('    [spy pdp pred] {}/{}'.format(k + 1, PDP_N_INSTANCES))
+    return results, X_background[idxs]
 
 
 # ===========================================================================
@@ -610,9 +628,6 @@ FS_TICK     = 9
 FS_LEGEND   = 9
 FS_ANNOT    = 9
 
-# ---------------------------------------------------------------------------
-# Font-size bundle: pass fs=_fs(3) into plot functions that need larger text.
-# ---------------------------------------------------------------------------
 from types import SimpleNamespace
 
 def _fs(bump=0):
@@ -642,29 +657,26 @@ GAME_YLABEL = {
 
 _EFFECT_TYPES = ['pure', 'partial', 'full']
 
-# Local prediction: no XAI equivalences
+# ── Label dicts: math notation removed (v7) ──────────────────────────────
 _LOCAL_PRED_LABELS = {
-    'pure'   : r'Pure $m_i(t)$',
-    'partial': r'Partial $\phi_i(t)$',
-    'full'   : r'Full $\Phi_i(t)$',
+    'pure'   : 'Pure',
+    'partial': 'Partial',
+    'full'   : 'Full',
 }
-# Global prediction: keep "= PDP" etc., plain = sign
 _GLOBAL_PRED_LABELS = {
-    'pure'   : r'Pure $m_i(x_j)$ = PDP',
-    'partial': r'Partial $\phi_i(x_j)$ = global SHAP',
-    'full'   : r'Full $\Phi_i(x_j)$',
+    'pure'   : 'Pure (= PDP)',
+    'partial': 'Partial (= global SHAP)',
+    'full'   : 'Full',
 }
-# Sensitivity (global): plain = sign
 _SENS_LABELS = {
-    'pure'   : r'Pure = closed Sobol',
-    'partial': r'Partial = Shapley-sens.',
-    'full'   : r'Full = total Sobol',
+    'pure'   : 'Pure = closed Sobol',
+    'partial': 'Partial = Shapley-sens.',
+    'full'   : 'Full = total Sobol',
 }
-# Risk (global): plain = sign
 _RISK_LABELS = {
-    'pure'   : r'Pure = pure risk',
-    'partial': r'Partial = SAGE',
-    'full'   : r'Full = PFI',
+    'pure'   : 'Pure = pure risk',
+    'partial': 'Partial = SAGE',
+    'full'   : 'Full = PFI',
 }
 
 def _scale(game_type):
@@ -691,7 +703,6 @@ def savefig(fig, name):
     plt.close(fig)
 
 def _align_row_ylims(axes_row):
-    """Align y-limits across a list of axes (one row, cols 0-2)."""
     ymin = min(ax.get_ylim()[0] for ax in axes_row)
     ymax = max(ax.get_ylim()[1] for ax in axes_row)
     for ax in axes_row:
@@ -699,7 +710,8 @@ def _align_row_ylims(axes_row):
 
 def _draw_bar_panel(ax, effect_dicts, kern_fn, pnames, sc,
                     title='Time-aggregated', fs=None):
-    """Horizontal bar panel: time-aggregated pure/partial/full importances."""
+    """Bar panel using three shades of each feature color (light/medium/dark)
+    for pure/partial/full.  No hatches.  Legend uses neutral grey swatches."""
     if fs is None:
         fs = _fs(0)
     n_players = len(pnames)
@@ -713,15 +725,15 @@ def _draw_bar_panel(ax, effect_dicts, kern_fn, pnames, sc,
                      key=lambda i: imps_all['partial'][i], reverse=True)
     y_pos   = np.arange(len(order))
     bar_h   = 0.25
-    offsets = {'pure': -bar_h, 'partial': 0.0, 'full': bar_h}
-    alphas  = {'pure': 0.55,   'partial': 0.90, 'full': 0.55}
-    hatches = {'pure': '//',   'partial': '',   'full': '\\\\'}
+    offsets       = {'pure': -bar_h, 'partial': 0.0, 'full': bar_h}
+    shade_factors = {'pure':  0.55,  'partial': 0.0, 'full': -0.40}
     for etype in _EFFECT_TYPES:
+        sf = shade_factors[etype]
+        bar_colors = [_shade_color(FEAT_COLORS[pnames[i]], sf) for i in order]
         ax.barh(y_pos + offsets[etype],
                 [imps_all[etype][i] for i in order],
-                height=bar_h,
-                color=[FEAT_COLORS[pnames[i]] for i in order],
-                alpha=alphas[etype], hatch=hatches[etype], label=etype)
+                height=bar_h, color=bar_colors, alpha=1.0,
+                edgecolor='none', label=etype)
     ax.set_yticks(y_pos)
     ax.set_yticklabels([pnames[i] for i in order], fontsize=fs.tick)
     ax.axvline(0, color='gray', lw=0.8, ls=':')
@@ -730,47 +742,22 @@ def _draw_bar_panel(ax, effect_dicts, kern_fn, pnames, sc,
     ax.spines['right'].set_visible(False)
     ax.tick_params(labelsize=fs.tick)
     ax.set_title(title, fontsize=fs.title, fontweight='bold')
-    ax.legend(fontsize=fs.legend, loc='upper right')
-
-
-def _add_fig_legend(fig, pnames, top_features, fs, bbox=(0.01, 0.98)):
-    """
-    Add a single shared feature legend to the figure, top-left near suptitle.
-    All feature lines drawn solid — linestyle in plots encodes kernel choice.
-    """
-    handles = []
-    for fi in top_features:
-        handles.append(Line2D([0], [0],
-                              color=FEAT_COLORS[pnames[fi]],
-                              lw=1.8, ls='-',
-                              label=pnames[fi]))
-    fig.legend(handles=handles, fontsize=fs.legend,
-               loc='upper left',
-               bbox_to_anchor=bbox,
-               framealpha=0.9, ncol=len(top_features))
-
-
-def _add_kernel_legend(fig, fs, bbox=(0.01, 0.0)):
-    """
-    Kernel linestyle legend: solid = OU, dashed = Causal.
-    Left-bounded, placed below the feature legend.
-    """
-    handles = [
-        Line2D([0], [0], color='#555', lw=1.8, ls='-',  label='OU kernel'),
-        Line2D([0], [0], color='#555', lw=1.8, ls='--', label='Causal kernel'),
+    # Neutral grey swatches so the legend reads as a shading key
+    leg_handles = [
+        Patch(facecolor=_shade_color('#888888',  0.55), edgecolor='none',
+              label='pure (light)'),
+        Patch(facecolor=_shade_color('#888888',  0.0),  edgecolor='none',
+              label='partial (medium)'),
+        Patch(facecolor=_shade_color('#888888', -0.40), edgecolor='none',
+              label='full (dark)'),
     ]
-    fig.legend(handles=handles, fontsize=fs.legend,
-               loc='lower left',
-               bbox_to_anchor=bbox,
-               framealpha=0.9, ncol=2)
+    ax.legend(handles=leg_handles, fontsize=fs.legend,
+              loc='upper left', bbox_to_anchor=(1.02, 1.0),
+              bbox_transform=ax.transAxes,
+              borderaxespad=0., framealpha=0.9)
 
 
 def _add_bottom_legends(fig, pnames, top_features, fs):
-    """
-    Two separate legends stacked vertically at the bottom-left:
-      top:    feature color legend
-      bottom: kernel linestyle legend (OU solid, Causal dashed)
-    """
     feat_handles = [
         Line2D([0], [0], color=FEAT_COLORS[pnames[fi]], lw=1.8, ls='-',
                label=pnames[fi])
@@ -780,41 +767,20 @@ def _add_bottom_legends(fig, pnames, top_features, fs):
         Line2D([0], [0], color='#555', lw=1.8, ls='-',  label='OU kernel'),
         Line2D([0], [0], color='#555', lw=1.8, ls='--', label='Causal kernel'),
     ]
-    # Feature legend slightly higher
     leg1 = fig.legend(
-        handles=feat_handles,
-        fontsize=fs.legend,
-        loc='lower left',
-        bbox_to_anchor=(0.04, 0.04),
-        framealpha=0.9,
-        ncol=len(feat_handles),
-    )
+        handles=feat_handles, fontsize=fs.legend, loc='lower left',
+        bbox_to_anchor=(0.04, 0.04), framealpha=0.9, ncol=len(feat_handles))
     fig.add_artist(leg1)
-    # Kernel legend directly below
     fig.legend(
-        handles=kern_handles,
-        fontsize=fs.legend,
-        loc='lower left',
-        bbox_to_anchor=(0.04, 0.0),
-        framealpha=0.9,
-        ncol=2,
-    )
+        handles=kern_handles, fontsize=fs.legend, loc='lower left',
+        bbox_to_anchor=(0.04, 0.0), framealpha=0.9, ncol=2)
 
 
 # ===========================================================================
 # 10.  PLOT 1 — Sensitivity + Risk (global, 4 rows x 4 cols)
 # ===========================================================================
 
-def plot_sensitivity_risk_global(global_sens, global_risk, pnames,
-                                  fs=None):
-    """
-    4 rows x 4 columns:
-      row 0: risk,        identity kernel
-      row 1: risk,        mixed kernel
-      row 2: sensitivity, identity kernel
-      row 3: sensitivity, mixed kernel
-    Single shared feature legend + kernel legend below. Y-axes per row only.
-    """
+def plot_sensitivity_risk_global(global_sens, global_risk, pnames, fs=None):
     if fs is None:
         fs = _fs(0)
     n_players = len(pnames)
@@ -825,24 +791,23 @@ def plot_sensitivity_risk_global(global_sens, global_risk, pnames,
 
     row_specs = [
         ('risk',        global_risk, kern_id,  'identity', _RISK_LABELS,
-         'Risk — Identity kernel'),
-        ('risk',        global_risk, kern_mix, 'mixed',    _RISK_LABELS,
-         'Risk — Mixed kernel (OU + causal)'),
+         'Risk \u2014 Identity kernel'),
+        ('risk',        global_risk, kern_mix, 'OU + Causal',    _RISK_LABELS,
+         'Risk \u2014 OU + Causal kernel'),
         ('sensitivity', global_sens, kern_id,  'identity', _SENS_LABELS,
-         'Sensitivity — Identity kernel'),
-        ('sensitivity', global_sens, kern_mix, 'mixed',    _SENS_LABELS,
-         'Sensitivity — Mixed kernel (OU + causal)'),
+         'Sensitivity \u2014 Identity kernel'),
+        ('sensitivity', global_sens, kern_mix, 'OU + Causal',    _SENS_LABELS,
+         'Sensitivity \u2014 OU + Causal kernel'),
     ]
 
     fig, axes = plt.subplots(4, 4, figsize=(20, 4.2 * 4),
                              gridspec_kw={'width_ratios': [3, 3, 3, 1.8]})
     fig.suptitle(
-        'Global Sensitivity and Risk effects — pure / partial / full\n'
-        '(averaged over {} instances) — Random Forest'.format(GLOBAL_N_INSTANCES),
+        'Global Sensitivity and Risk effects \u2014 pure / partial / full\n'
+        '(averaged over {} instances) \u2014 Random Forest'.format(GLOBAL_N_INSTANCES),
         fontsize=fs.suptitle, fontweight='bold')
 
-    top_k     = 5
-    top_feats = None
+    top_k = 5; top_feats = None
 
     for r, (gtype, g_eff, kern_fn, klabel, eff_labels, row_title) in \
             enumerate(row_specs):
@@ -862,7 +827,7 @@ def plot_sensitivity_risk_global(global_sens, global_risk, pnames,
             for fi in top:
                 K  = kern_fn(fi)
                 ls = '--' if pnames[fi] == 'ann_indicator' \
-                             and klabel == 'mixed' else '-'
+                             and klabel == 'OU + Causal' else '-'
                 ax.plot(t_grid, apply_kernel(eff[fi], K) * sc,
                         color=FEAT_COLORS[pnames[fi]], lw=1.8, ls=ls)
             ax.axhline(0, color='gray', lw=0.5, ls=':')
@@ -872,45 +837,31 @@ def plot_sensitivity_risk_global(global_sens, global_risk, pnames,
             ax.set_title(eff_labels[etype], fontsize=fs.title, fontweight='bold')
             if c == 0:
                 ax.set_ylabel(GAME_YLABEL[gtype], fontsize=fs.axis)
-                ax.text(-0.30, 0.5, row_title, transform=ax.transAxes,
+                ax.text(-0.44, 0.5, row_title, transform=ax.transAxes,
                         fontsize=fs.axis - 1, va='center', ha='right',
                         rotation=90, color='#333', fontweight='bold')
 
-        _draw_bar_panel(axes[r, 3], effect_dicts, kern_fn, pnames, sc,
-                        fs=fs)
+        _draw_bar_panel(axes[r, 3], effect_dicts, kern_fn, pnames, sc, fs=fs)
         _align_row_ylims([axes[r, c] for c in range(3)])
 
-    # Fig1: feature legend and kernel legend stacked, small gap between them
     feat_handles_f1 = [
         Line2D([0], [0], color=FEAT_COLORS[pnames[fi]], lw=1.8, ls='-',
                label=pnames[fi])
-        for fi in top_feats
-    ]
+        for fi in top_feats]
     kern_handles_f1 = [
         Line2D([0], [0], color='#555', lw=1.8, ls='-',  label='OU kernel'),
         Line2D([0], [0], color='#555', lw=1.8, ls='--', label='Causal kernel'),
     ]
-    leg1 = fig.legend(
-        handles=feat_handles_f1,
-        fontsize=fs.legend,
-        loc='lower left',
-        bbox_to_anchor=(0.04, 0.025),
-        framealpha=0.9,
-        ncol=len(feat_handles_f1),
-    )
+    leg1 = fig.legend(handles=feat_handles_f1, fontsize=fs.legend,
+                      loc='lower left', bbox_to_anchor=(0.08, 0.025),
+                      framealpha=0.9, ncol=len(feat_handles_f1))
     fig.add_artist(leg1)
-    fig.legend(
-        handles=kern_handles_f1,
-        fontsize=fs.legend,
-        loc='lower left',
-        bbox_to_anchor=(0.04, 0.0),
-        framealpha=0.9,
-        ncol=2,
-    )
-    plt.tight_layout(rect=[0.04, 0.07, 1, 0.94])
+    fig.legend(handles=kern_handles_f1, fontsize=fs.legend,
+               loc='lower left', bbox_to_anchor=(0.08, 0.0),
+               framealpha=0.9, ncol=2)
+    plt.tight_layout(rect=[0.08, 0.07, 1, 0.94])
     fig.subplots_adjust(hspace=0.65, top=0.92)
     return fig
-
 
 
 # ===========================================================================
@@ -918,13 +869,6 @@ def plot_sensitivity_risk_global(global_sens, global_risk, pnames,
 # ===========================================================================
 
 def plot_local_prediction(moebius_hv, shapley_hv, pnames, fs=None):
-    """
-    2 rows x 4 columns:
-      row 0: prediction, identity kernel — pure/partial/full + bar
-      row 1: prediction, mixed kernel    — same
-    Single shared feature legend + kernel legend below. Y-axes per row only.
-    Interaction effects moved to plot_interactions (fig4).
-    """
     if fs is None:
         fs = _fs(0)
     n_players = len(pnames)
@@ -939,17 +883,18 @@ def plot_local_prediction(moebius_hv, shapley_hv, pnames, fs=None):
     partial_eff = shapley_hv['prediction']
     full_eff    = _full_effects(moebius, n_players)
 
-    top_k        = 5
-    row_specs    = [
+    top_k     = 5
+    row_specs = [
         (kern_id,  'Identity kernel',            'identity'),
-        (kern_mix, 'Mixed kernel (OU + causal)', 'mixed'),
+        (kern_mix, 'OU + Causal kernel', 'OU + Causal'),
     ]
 
     fig, axes = plt.subplots(2, 4, figsize=(20, 4.2 * 2),
                              gridspec_kw={'width_ratios': [3, 3, 3, 1.8]})
+    # v7: title matches energy-demand fig2 structure
     fig.suptitle(
-        'Local Prediction effects — pure / partial / full\n'
-        'High-VIX Announcement profile (2022-07-13) — Random Forest',
+        'Local Prediction effects \u2014 pure / partial / full\n'
+        'High-VIX Announcement profile \u2014 Random Forest',
         fontsize=fs.suptitle, fontweight='bold')
 
     top_feats = None
@@ -967,27 +912,26 @@ def plot_local_prediction(moebius_hv, shapley_hv, pnames, fs=None):
             for fi in top:
                 K  = kern_fn(fi)
                 ls = '--' if pnames[fi] == 'ann_indicator' \
-                             and kkey == 'mixed' else '-'
+                             and kkey == 'OU + Causal' else '-'
                 ax.plot(t_grid, apply_kernel(eff[fi], K) * sc,
                         color=FEAT_COLORS[pnames[fi]], lw=1.8, ls=ls)
             ax.axhline(0, color='gray', lw=0.5, ls=':')
             _period_shade(ax); _ann_vline(ax); _set_time_axis(ax, sparse=True)
             ax.tick_params(labelsize=fs.tick)
             ax.set_xlabel('Time', fontsize=fs.axis)
+            # v7: plain prose labels from _LOCAL_PRED_LABELS
             ax.set_title(_LOCAL_PRED_LABELS[etype],
                          fontsize=fs.title, fontweight='bold')
             if c == 0:
                 ax.set_ylabel(GAME_YLABEL['prediction'], fontsize=fs.axis)
-                ax.text(-0.30, 0.5,
-                        'Prediction\n{}'.format(klabel),
-                        transform=ax.transAxes,
-                        fontsize=fs.axis - 1, va='center', ha='right',
-                        rotation=90, color='#333', fontweight='bold')
+                ax.text(-0.30, 0.5, 'Prediction\n{}'.format(klabel),
+                        transform=ax.transAxes, fontsize=fs.axis - 1,
+                        va='center', ha='right', rotation=90,
+                        color='#333', fontweight='bold')
 
         _draw_bar_panel(axes[r, 3], effect_dicts, kern_fn, pnames, sc, fs=fs)
         _align_row_ylims([axes[r, c] for c in range(3)])
 
-    # Feature + kernel legend side by side at the bottom
     _add_bottom_legends(fig, pnames, top_feats, fs=fs)
     plt.tight_layout(rect=[0.04, 0.10, 1, 0.91])
     fig.subplots_adjust(hspace=0.65, top=0.88)
@@ -999,16 +943,8 @@ def plot_local_prediction(moebius_hv, shapley_hv, pnames, fs=None):
 # ===========================================================================
 
 def plot_interactions(moebius_hv, pnames, fs=None):
-    """
-    2 rows x 2 columns:
-      row 0: identity kernel — interaction line plot | time-aggregated bar
-      row 1: mixed kernel    — same (causal pairs dashed, OU pairs solid)
-    Default font size. Pair + kernel legends side by side at bottom.
-    Reduced axes tick fontsize to prevent x-label overlap.
-    """
     if fs is None:
         fs = _fs(0)
-    # Slightly smaller tick/axis labels to prevent time-axis overlap
     ax_tick_fs  = max(fs.tick  - 2, 6)
     ax_label_fs = max(fs.axis  - 1, 7)
 
@@ -1028,14 +964,15 @@ def plot_interactions(moebius_hv, pnames, fs=None):
 
     fig, axes = plt.subplots(2, 2, figsize=(12, 4.2 * 2),
                              gridspec_kw={'width_ratios': [3, 1.8]})
+    # v7: math removed from suptitle, matches energy-demand fig4 structure
     fig.suptitle(
-        r'Local pairwise interaction effects $m_{ij}(t)$ -- top-5 pairs'
-        '\nHigh-VIX Announcement profile (2022-07-13) -- Random Forest',
+        'Local pairwise interaction effects \u2014 top-5 pairs\n'
+        'High-VIX Announcement profile \u2014 Random Forest',
         fontsize=fs.suptitle, fontweight='bold')
 
     inter_row_specs = [
-        (K_id, 'identity', 'Interactions -- Identity kernel'),
-        (K_ou, 'mixed',    'Interactions -- Mixed kernel (OU + causal)'),
+        (K_id, 'identity', 'Interactions \u2014 Identity kernel'),
+        (K_ou, 'OU + Causal',    'Interactions \u2014 OU + Causal kernel'),
     ]
 
     for r, (K_base, kkey, row_label) in enumerate(inter_row_specs):
@@ -1043,7 +980,7 @@ def plot_interactions(moebius_hv, pnames, fs=None):
         fi_ann = pnames.index('ann_indicator')
         for pair_idx, (i, j) in enumerate(top5):
             raw = moebius.get((i, j), np.zeros(T_BARS))
-            if kkey == 'mixed':
+            if kkey == 'OU + Causal':
                 is_causal = (i == fi_ann or j == fi_ann)
                 K_use = kernel_causal(t_grid, 8.0) if is_causal else K_ou
                 ls    = '--' if is_causal else '-'
@@ -1061,33 +998,41 @@ def plot_interactions(moebius_hv, pnames, fs=None):
         ax.tick_params(labelsize=ax_tick_fs)
         ax.set_xlabel('Time', fontsize=ax_label_fs)
         ax.set_ylabel(GAME_YLABEL['prediction'], fontsize=ax_label_fs)
-        ax.set_title(r'$m_{ij}(t)$', fontsize=fs.title, fontweight='bold')
+        # v7: plain prose panel title
+        ax.set_title('Pairwise interaction', fontsize=fs.title, fontweight='bold')
         ax.text(-0.18, 0.5, row_label, transform=ax.transAxes,
                 fontsize=ax_label_fs - 1, va='center', ha='right',
                 rotation=90, color='#333', fontweight='bold')
         _align_row_ylims([axes[r, 0]])
 
         ax_bar = axes[r, 1]
-        pair_imps, pair_lbls = [], []
-        for pair_idx, (i, j) in enumerate(top5):
+        row_imps = []
+        for i, j in top5:
             raw = moebius.get((i, j), np.zeros(T_BARS))
             K_use = (kernel_causal(t_grid, 8.0)
-                     if (kkey == 'mixed' and (i == fi_ann or j == fi_ann))
+                     if (kkey == 'OU + Causal' and (i == fi_ann or j == fi_ann))
                      else (K_id if kkey == 'identity' else K_ou))
-            pair_imps.append(
-                float(np.sum(np.abs(apply_kernel(raw, K_use)))) * sc)
-            pair_lbls.append('{} x {}'.format(pnames[i], pnames[j]))
-        y_pos = np.arange(len(top5))
-        ax_bar.barh(y_pos, pair_imps, color=PAIR_COLORS[:len(top5)], alpha=0.85)
+            row_imps.append((float(np.sum(np.abs(apply_kernel(raw, K_use)))) * sc,
+                             (i, j)))
+        row_imps_sorted = sorted(row_imps, key=lambda x: x[0], reverse=True)
+        y_pos = np.arange(len(row_imps_sorted))
+        ax_bar.barh(y_pos,
+                    [imp for imp, _ in row_imps_sorted],
+                    color=[PAIR_COLORS[top5.index(ij)]
+                           for _, ij in row_imps_sorted],
+                    alpha=0.85)
         ax_bar.set_yticks(y_pos)
-        ax_bar.set_yticklabels(pair_lbls, fontsize=ax_tick_fs - 1)
-        ax_bar.set_xlabel(r'$\int|m_{ij}|\,dt$', fontsize=ax_label_fs)
+        ax_bar.set_yticklabels(
+            ['{} x {}'.format(pnames[i], pnames[j])
+             for _, (i, j) in row_imps_sorted],
+            fontsize=ax_tick_fs - 1)
+        # v7: math replaced with dot in bar xlabel
+        ax_bar.set_xlabel(r'$\int|\cdot|\,dt$', fontsize=ax_label_fs)
         ax_bar.spines['top'].set_visible(False)
         ax_bar.spines['right'].set_visible(False)
         ax_bar.tick_params(labelsize=ax_tick_fs)
         ax_bar.set_title('Time-aggregated', fontsize=fs.title, fontweight='bold')
 
-    # Two stacked legends: pair colors on top, kernel linestyle below
     pair_handles = [
         Line2D([0], [0], color=PAIR_COLORS[k], lw=1.8,
                label='{} x {}'.format(pnames[i], pnames[j]))
@@ -1096,33 +1041,23 @@ def plot_interactions(moebius_hv, pnames, fs=None):
         Line2D([0], [0], color='#555', lw=1.8, ls='-',  label='OU kernel'),
         Line2D([0], [0], color='#555', lw=1.8, ls='--', label='Causal kernel'),
     ]
-    leg1 = fig.legend(
-        handles=pair_handles,
-        fontsize=fs.legend,
-        loc='lower left',
-        bbox_to_anchor=(0.04, 0.04),
-        framealpha=0.9,
-        ncol=len(pair_handles),
-    )
+    leg1 = fig.legend(handles=pair_handles, fontsize=fs.legend,
+                      loc='lower left', bbox_to_anchor=(0.04, 0.04),
+                      framealpha=0.9, ncol=len(pair_handles))
     fig.add_artist(leg1)
-    fig.legend(
-        handles=kern_handles,
-        fontsize=fs.legend,
-        loc='lower left',
-        bbox_to_anchor=(0.04, 0.0),
-        framealpha=0.9,
-        ncol=2,
-    )
+    fig.legend(handles=kern_handles, fontsize=fs.legend,
+               loc='lower left', bbox_to_anchor=(0.04, 0.0),
+               framealpha=0.9, ncol=2)
     plt.tight_layout(rect=[0.04, 0.10, 1, 0.93])
     fig.subplots_adjust(hspace=0.55, top=0.88)
     return fig
+
 
 # ===========================================================================
 # 12.  PLOT 3 — Global Prediction PDP-style (4 rows x 3 cols, no bar panel)
 # ===========================================================================
 
 def _top2_global_features(global_pred, pnames):
-    """Top-2 features by integrated |global SHAP| under OU kernel."""
     n_players = len(pnames)
     avg_shap, _, _ = global_pred
     K_ou = kernel_ou(t_grid, 8.0)
@@ -1134,19 +1069,11 @@ def _top2_global_features(global_pred, pnames):
 def _pdp_panel(ax, fi, etype, kern_fn, X_background,
                per_instance_effects, pnames, sc,
                selected_t_idxs, t_cmap, fs, n_bins=N_FEAT_BINS):
-    """
-    One PDP-style panel:
-      x-axis  = observed values of feature fi (binned)
-      y-axis  = kernel-smoothed effect
-      lines   = dashed, one per selected time point (colored)
-      black   = solid time-aggregated mean across all T
-    """
     feat_vals   = X_background[:, fi]
     fmin, fmax  = feat_vals.min(), feat_vals.max()
     bins        = np.linspace(fmin, fmax, n_bins + 1)
     bin_centers = 0.5 * (bins[:-1] + bins[1:])
     bin_idx     = np.clip(np.digitize(feat_vals, bins) - 1, 0, n_bins - 1)
-
     K = kern_fn(fi)
     bin_effects = np.full((n_bins, T_BARS), np.nan)
     for b in range(n_bins):
@@ -1158,46 +1085,31 @@ def _pdp_panel(ax, fi, etype, kern_fn, X_background,
             for k in np.where(mask)[0]
         ])
         bin_effects[b] = effects.mean(axis=0)
-
     valid  = ~np.isnan(bin_effects[:, 0])
     n_t    = len(selected_t_idxs)
     colors = [t_cmap(i / (n_t - 1)) for i in range(n_t)]
     for ti, col in zip(selected_t_idxs, colors):
         ax.plot(bin_centers[valid], bin_effects[valid, ti] * sc,
                 color=col, lw=1.4, ls='--', alpha=0.85, label=BAR_LABELS[ti])
-
     pdp = np.nanmean(bin_effects, axis=1) * sc
     ax.plot(bin_centers[valid], pdp[valid],
             color='black', lw=2.5, ls='-', zorder=5, label='time-agg.')
     ax.axhline(0, color='gray', lw=0.5, ls=':')
     ax.tick_params(labelsize=fs.tick)
-    # Rotate x-tick labels and limit count to prevent overlap
     ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=6, prune='both'))
     for lbl in ax.get_xticklabels():
-        lbl.set_rotation(45)
-        lbl.set_ha('right')
-        lbl.set_fontsize(fs.tick)
+        lbl.set_rotation(45); lbl.set_ha('right'); lbl.set_fontsize(fs.tick)
     ax.set_xlabel(pnames[fi], fontsize=fs.axis)
 
 
 def plot_global_prediction_pdp(per_instance_effects, global_pred,
                                 X_background, pnames, fs=None):
-    """
-    4 rows x 3 columns (no bar panel):
-      row 0: feature 1, identity kernel
-      row 1: feature 1, OU kernel
-      row 2: feature 2, identity kernel
-      row 3: feature 2, OU kernel
-    Time-point lines: dashed. Time-aggregated PDP: solid black, thick.
-    Shared legend bottom-center. Y-axes aligned within each row only.
-    """
     if fs is None:
         fs = _fs(0)
-    n_players = len(pnames)
-    K_id      = kernel_identity(t_grid)
-    K_ou      = kernel_ou(t_grid, 8.0)
+    K_id = kernel_identity(t_grid)
+    K_ou = kernel_ou(t_grid, 8.0)
 
-    def kern_id(fi):  return K_id
+    def kern_id(fi):    return K_id
     def kern_ou_fn(fi): return K_ou
 
     sc   = _scale('prediction')
@@ -1212,59 +1124,46 @@ def plot_global_prediction_pdp(per_instance_effects, global_pred,
         feat_row_specs.append((fi, kern_ou_fn, 'OU kernel'))
 
     fig, axes = plt.subplots(4, 3, figsize=(18, 3.8 * 4))
+    # v7: title matches energy-demand fig3 structure
     fig.suptitle(
-        'Global Prediction effects — PDP-style — pure / partial / full\n'
-        '(per-instance effects, binned over feature range) — Random Forest',
+        'Global Prediction effects \u2014 PDP-style \u2014 pure / partial / full\n'
+        '(per-instance effects, binned over feature range) \u2014 Random Forest',
         fontsize=fs.suptitle, fontweight='bold')
 
     for r, (fi, kern_fn, klabel) in enumerate(feat_row_specs):
         for c, etype in enumerate(_EFFECT_TYPES):
             ax = axes[r, c]
-            _pdp_panel(ax, fi, etype, kern_fn,
-                       X_background, per_instance_effects,
-                       pnames, sc, selected_t_idxs, t_cmap, fs=fs)
+            _pdp_panel(ax, fi, etype, kern_fn, X_background,
+                       per_instance_effects, pnames, sc,
+                       selected_t_idxs, t_cmap, fs=fs)
+            # v7: plain prose column titles from _GLOBAL_PRED_LABELS
             ax.set_title(_GLOBAL_PRED_LABELS[etype],
                          fontsize=fs.title, fontweight='bold')
             if c == 0:
                 ax.set_ylabel(GAME_YLABEL['prediction'], fontsize=fs.axis)
-                row_label = '{}\n{}'.format(pnames[fi], klabel)
-                ax.text(-0.22, 0.5, row_label,
-                        transform=ax.transAxes,
-                        fontsize=fs.axis - 1, va='center', ha='right',
-                        rotation=90, color='#333', fontweight='bold')
-
+                ax.text(-0.22, 0.5, '{}\n{}'.format(pnames[fi], klabel),
+                        transform=ax.transAxes, fontsize=fs.axis - 1,
+                        va='center', ha='right', rotation=90,
+                        color='#333', fontweight='bold')
         _align_row_ylims([axes[r, c] for c in range(3)])
 
-    # Shared legend for time points + time-agg — bottom center
     t_handles = [
-        Line2D([0], [0],
-               color=t_cmap(i / (len(selected_t_idxs) - 1)),
+        Line2D([0], [0], color=t_cmap(i / (len(selected_t_idxs) - 1)),
                lw=1.4, ls='--', label=BAR_LABELS[ti])
         for i, ti in enumerate(selected_t_idxs)
     ] + [Line2D([0], [0], color='black', lw=2.5, ls='-', label='time-agg.')]
-    fig.legend(handles=t_handles, fontsize=fs.legend,
-               loc='lower center', ncol=len(t_handles),
-               bbox_to_anchor=(0.5, 0.0),
-               framealpha=0.9)
-
+    fig.legend(handles=t_handles, fontsize=fs.legend, loc='lower center',
+               ncol=len(t_handles), bbox_to_anchor=(0.5, 0.0), framealpha=0.9)
     plt.tight_layout(rect=[0.04, 0.06, 1, 0.93])
     fig.subplots_adjust(hspace=0.80, top=0.91)
     return fig
 
 
 # ===========================================================================
-# 13.  fig0 — Main body summary (local pred rows 0-1, global risk row 2)
+# 13.  fig0 — Main body summary
 # ===========================================================================
 
 def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
-    """
-    3 rows x 4 columns:
-      row 0: local prediction, identity kernel
-      row 1: local prediction, mixed kernel
-      row 2: global risk,      mixed kernel
-    Focuses on vix_prev + ann_indicator for prediction rows; top-3 for risk.
-    Y-axes aligned within each row (cols 0-2) only.
-    """
     n_players = len(pnames)
     fi_vix    = pnames.index('vix_prev')
     fi_ann    = pnames.index('ann_indicator')
@@ -1280,27 +1179,28 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
     partial_pred = shapley_hv['prediction']
     full_pred    = _full_effects(moebius_hv['prediction'], n_players)
 
+    # v7: column title strings are plain prose (no math)
     row_specs = [
-        # (gtype, y_label, pure, partial, full, kern_fn, row_label,
-        #  lbl_pure, lbl_partial, lbl_full, K_inter, sc)
         ('prediction', GAME_YLABEL['prediction'],
          pure_pred, partial_pred, full_pred, kern_id,
          'Prediction\n(Identity)',
-         r'Pure $m_i(t)$', r'Partial $\phi_i(t)$', r'Full $\Phi_i(t)$',
+         'Pure', 'Partial', 'Full',
          K_id, _scale('prediction')),
         ('prediction', GAME_YLABEL['prediction'],
          pure_pred, partial_pred, full_pred, kern_mix,
-         'Prediction\n(Mixed)',
-         r'Pure $m_i(t)$', r'Partial $\phi_i(t)$', r'Full $\Phi_i(t)$',
+         'Prediction\n(OU + Causal)',
+         'Pure', 'Partial', 'Full',
          K_causal, _scale('prediction')),
     ]
 
     fig, axes = plt.subplots(
         2, 4, figsize=(19, 2.9 * 2),
         gridspec_kw={'width_ratios': [3, 3, 3, 1.8]})
+    # v7: suptitle matches energy-demand fig0 framing
     fig.suptitle(
-        'Hilbert Functional Decomposition Framework: Kernel Choice and Effect Decomposition\n'
-        'High-VIX Announcement Profile — Local Prediction',
+        'Hilbert-valued explanation framework: intraday volatility \u2014 '
+        'kernel choice shapes the attribution profile\n'
+        'High-VIX Announcement profile \u2014 Local Prediction',
         fontsize=FS_SUPTITLE, fontweight='bold')
 
     for r, (gtype, y_label, pure_eff, partial_eff, full_eff,
@@ -1318,7 +1218,6 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
                         color=FEAT_COLORS[pnames[fi]], lw=2.0, ls=ls,
                         label=pnames[fi])
 
-        # col 0: pure — legend upper-left for row 0, lower-left for row 1
         ax = axes[r, 0]
         _plot_feat(ax, pure_eff)
         ax.axhline(0, color='gray', lw=0.5, ls=':')
@@ -1333,7 +1232,6 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
         legend_loc = 'lower left' if r == 1 else 'upper left'
         ax.legend(fontsize=FS_LEGEND, loc=legend_loc, framealpha=0.9)
 
-        # col 1: partial
         ax = axes[r, 1]
         _plot_feat(ax, partial_eff)
         pure_int = float(np.sum(np.abs(
@@ -1345,15 +1243,14 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
                 'ann: partial/pure = {:.2f}x'.format(ratio),
                 transform=ax.transAxes, fontsize=FS_ANNOT - 1,
                 va='top', ha='left', color=FEAT_COLORS['ann_indicator'],
-                bbox=dict(boxstyle='round,pad=0.25',
-                          fc='white', ec='#ddd', alpha=0.9))
+                bbox=dict(boxstyle='round,pad=0.25', fc='white',
+                          ec='#ddd', alpha=0.9))
         ax.axhline(0, color='gray', lw=0.5, ls=':')
         _period_shade(ax); _ann_vline(ax); _set_time_axis(ax, sparse=True)
         ax.tick_params(labelsize=FS_TICK)
         ax.set_xlabel('Time', fontsize=FS_AXIS)
         ax.set_title(lbl_partial, fontsize=FS_TITLE - 1, fontweight='bold')
 
-        # col 2: interaction — no backslash before underscores
         ax = axes[r, 2]
         raw    = moebius_hv['prediction'].get(
             (fi_vix, fi_ann), np.zeros(T_BARS))
@@ -1363,26 +1260,25 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
         ax.fill_between(t_grid, 0, pos, color='#2a9d8f', alpha=0.30)
         ax.fill_between(t_grid, 0, neg, color='#e63946', alpha=0.30)
         ax.plot(t_grid, int_mx, color='#333', lw=1.8)
+        # Inline annotation kept: labels a specific computed number
         integ = float(np.trapz(raw, t_grid)) * sc
         ax.text(0.03, 0.97,
                 r'$\int m_{{ij}}\,dt$ = {:.3f}'.format(integ),
                 transform=ax.transAxes, fontsize=FS_ANNOT,
                 va='top', ha='left',
-                bbox=dict(boxstyle='round,pad=0.25',
-                          fc='white', ec='#aaa', alpha=0.85))
-        ax.set_title(
-            r'Interaction $m_{ij}$ — vix_prev x ann_indicator',
-            fontsize=FS_TITLE - 1, fontweight='bold')
+                bbox=dict(boxstyle='round,pad=0.25', fc='white',
+                          ec='#aaa', alpha=0.85))
+        # v7: interaction panel title: plain prose, underscore escaped for LaTeX
+        ax.set_title('Interaction \u2014 vix_prev \u00d7 ann_indicator',
+                     fontsize=FS_TITLE - 1, fontweight='bold')
         ax.axhline(0, color='gray', lw=0.5, ls=':')
         _period_shade(ax); _ann_vline(ax); _set_time_axis(ax, sparse=True)
         ax.tick_params(labelsize=FS_TICK)
         ax.set_xlabel('Time', fontsize=FS_AXIS)
 
-        # col 3: bar
         effect_dicts_bar = {
             'pure': pure_eff, 'partial': partial_eff, 'full': full_eff}
         _draw_bar_panel(axes[r, 3], effect_dicts_bar, kern_fn, pnames, sc)
-
         _align_row_ylims([axes[r, c] for c in range(3)])
 
     plt.tight_layout(rect=[0.04, 0, 1, 0.91])
@@ -1396,19 +1292,17 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
 
 if __name__ == '__main__':
     print('\n' + '=' * 60)
-    print('  SPY Intraday Vol  —  RF  (v6)')
+    print('  SPY Intraday Vol  \u2014  RF  (v7)')
     print('=' * 60)
 
     _require_dir(BASE_PLOT_DIR)
     _require_dir(DATA_DIR)
     _require_dir(GAME_CACHE_DIR)
 
-    # ── 1. Data ───────────────────────────────────────────────────────────
     print('\n[1] Loading data ...')
     X_day, Y_day, Y_adj, diurnal_mean = load_and_aggregate()
     X_day_np = X_day.to_numpy().astype(float)
 
-    # ── 2. Model ──────────────────────────────────────────────────────────
     print('\n[2] Fitting Random Forest ...')
     X_tr, X_te, Y_tr, Y_te = train_test_split(
         X_day_np, Y_adj, test_size=0.2, random_state=RNG_SEED)
@@ -1418,9 +1312,7 @@ if __name__ == '__main__':
     print('  Test R2 (trajectory-level): {:.4f}'.format(r2))
     pnames = list(DAY_FEATURE_NAMES)
 
-    # ── 3. Global games (prediction, sensitivity, risk) ───────────────────
-    print('\n[3] Global games ({} instances each) ...'.format(
-        GLOBAL_N_INSTANCES))
+    print('\n[3] Global games ({} instances each) ...'.format(GLOBAL_N_INSTANCES))
     global_effects = {}
     for gtype in ('prediction', 'sensitivity', 'risk'):
         print('\n  global {} ...'.format(gtype))
@@ -1435,7 +1327,6 @@ if __name__ == '__main__':
         )
         global_effects[gtype] = (avg_shap, avg_pure, avg_full)
 
-    # ── 4. High-VIX Announcement profile ──────────────────────────────────
     print('\n[4] Selecting High-VIX Announcement profile ...')
     vix_col = DAY_FEATURE_NAMES.index('vix_prev')
     vix_p75 = float(np.percentile(X_day_np[:, vix_col], 75))
@@ -1453,24 +1344,19 @@ if __name__ == '__main__':
 
     x_hv = find_profile(
         {'ann_indicator': (0.9, 1.1), 'vix_prev': (vix_p75, 999)})
+    print(dict(zip(DAY_FEATURE_NAMES, x_hv)))
 
-    # ── 5. Local prediction game ───────────────────────────────────────────
     print('\n[5] Local prediction game (High-VIX profile) ...')
     mob_hv, shap_hv = compute_local_prediction(
         model.predict, X_day_np, x_hv, 'High_VIX_Announcement')
     moebius_hv = {'prediction': mob_hv}
     shapley_hv = {'prediction': shap_hv}
 
-    # ── 6. Per-instance prediction effects for PDP plot ───────────────────
-    print('\n[6] Per-instance prediction effects for PDP plot ...')
-    rng_glob  = np.random.default_rng(RNG_SEED)
-    glob_idxs = rng_glob.choice(
-        len(X_day_np), size=GLOBAL_N_INSTANCES, replace=False)
-    X_glob_subset       = X_day_np[glob_idxs]
-    per_instance_effects = load_per_instance_effects(
-        model.predict, X_day_np, Y_adj, glob_idxs, RNG_SEED)
+    print('\n[6] Per-instance prediction effects for PDP plot ({} instances) ...'.format(
+        PDP_N_INSTANCES))
+    per_instance_effects, X_pdp_subset = load_per_instance_effects_pdp(
+        model.predict, X_day_np, Y_adj, RNG_SEED)
 
-    # ── 7. Generate figures ───────────────────────────────────────────────
     print('\n[7] Generating figures ...')
 
     savefig(
@@ -1493,7 +1379,7 @@ if __name__ == '__main__':
         plot_global_prediction_pdp(
             per_instance_effects=per_instance_effects,
             global_pred=global_effects['prediction'],
-            X_background=X_glob_subset,
+            X_background=X_pdp_subset,
             pnames=pnames,
             fs=_fs(3)),
         'fig3_global_prediction_pdp.pdf')

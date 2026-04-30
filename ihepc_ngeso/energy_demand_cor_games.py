@@ -1,19 +1,34 @@
 """
-Functional Explanation Framework -- Combined Energy Example  (v5)
+Functional Explanation Framework -- Combined Energy Example  (v7)
 =================================================================
-Changes vs v4:
-  - Game result caching: .npz per instance per game type per dataset.
-    On re-run only plots are regenerated. Bump CACHE_VERSION to recompute.
-  - Per-instance prediction effects cached for PDP plots (fig3).
-  - New figure set matching SPY v7 structure:
-      fig0 : single-row layout (heatmap, network, gap x2 datasets)
-      fig1  : global risk + sensitivity (4 rows x 4 cols), per dataset
-      fig2  : local prediction (2 rows x 4 cols), per dataset
-      fig3  : global prediction PDP-style (4 rows x 3 cols), per dataset
-      fig4  : local interactions (2 rows x 2 cols), per dataset
-      fig5  : network plots global risk+sensitivity shared IHEPC+NESO
-  - Discrete features use actual distinct values as PDP bin centers.
-  - Font-size bundle _fs(bump) for per-figure font scaling.
+Changes vs v6:
+  - fig0_main_body:
+      * Heatmap colormap anchored at 0 via TwoSlopeNorm(vcenter=0,
+        vmin=min(-0.2, K.min()), vmax=K.max()), so white = 0,
+        blue = negative, red = positive, colors not misleading.
+      * Removed \\Phi formulas from titles.
+      * Network plots enlarged by stealing width on the heatmap side
+        only (not moving toward the sensitivity panel) via per-axis
+        position adjustment after layout.
+      * Bumped font sizes globally for the figure, especially heatmap
+        tick labels / colorbar and network legend.
+      * Updated suptitle.
+  - fig1 + fig2 bar plots:
+      * Pure / partial / full now distinguished by three shades of the
+        same feature color (light / medium / dark) instead of identical
+        feature color with hatches; hatches removed; alpha = 1.
+  - fig5_networks_global:
+      * compute_global_effects now also returns avg_mob (full averaged
+        Mobius dict over all subsets), accumulated from per-instance
+        caches.  Cache files are NOT regenerated — full Mobius is
+        already in cache, we just aggregate it on top.
+      * _network_importances_global uses correct pure / partial / full
+        edge formulas:
+            pure edge (i,j)     = m_{ij}
+            partial edge (i,j)  = sum_{S superseteq {i,j}} m_S / |S|
+            full edge (i,j)     = sum_{S superseteq {i,j}} m_S
+        This makes pure/partial/full sensitivity networks genuinely
+        differ.
 """
 
 import itertools
@@ -22,6 +37,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import matplotlib
+import matplotlib.colors
 import matplotlib.ticker
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -39,7 +55,7 @@ from types import SimpleNamespace
 # ---------------------------------------------------------------------------
 # 0.  Global settings
 # ---------------------------------------------------------------------------
-CACHE_VERSION = 'v5'
+CACHE_VERSION = 'v6'
 
 _HERE    = os.path.dirname(os.path.abspath(__file__))
 RNG_SEED = 42
@@ -52,6 +68,9 @@ GAME_CACHE_DIR = os.path.join(_HERE, 'game_results_energy')
 GLOBAL_N_INSTANCES = 30
 GLOBAL_SAMPLE_SIZE = 100
 N_FEAT_BINS        = 20   # max bins for continuous features in PDP
+PDP_N_INSTANCES    = 120  # larger instance set for PDP plots, ensures all
+                          # discrete categories (months, seasons, etc.) are
+                          # represented; uses a separate cache namespace
 
 # Continuous features — use uniform bins; all others use distinct values
 CONTINUOUS_FEATURES = {'lag_daily_mean', 'lag_morning', 'lag_evening'}
@@ -144,16 +163,35 @@ _RISK_LABELS = {
     'full'   : r'Full = PFI',
 }
 _LOCAL_PRED_LABELS = {
-    'pure'   : r'Pure $m_i(t)$',
-    'partial': r'Partial $\phi_i(t)$',
-    'full'   : r'Full $\Phi_i(t)$',
+    'pure'   : 'Pure',
+    'partial': 'Partial',
+    'full'   : 'Full',
 }
 _GLOBAL_PRED_LABELS = {
-    'pure'   : r'Pure $m_i(x_j)$ = PDP',
-    'partial': r'Partial $\phi_i(x_j)$ = global SHAP',
-    'full'   : r'Full $\Phi_i(x_j)$',
+    'pure'   : 'Pure (= PDP)',
+    'partial': 'Partial (= global SHAP)',
+    'full'   : 'Full',
 }
 _EFFECT_TYPES = ['pure', 'partial', 'full']
+
+
+# ===========================================================================
+# 0b.  Color shading helpers (for fig1+fig2 bar plots)
+# ===========================================================================
+
+def _hex_to_rgb01(c):
+    return matplotlib.colors.to_rgb(c)
+
+def _shade_color(c, factor):
+    """factor>0: lighten toward white; factor<0: darken toward black."""
+    r, g, b = _hex_to_rgb01(c)
+    if factor >= 0:
+        return (r + (1.0 - r) * factor,
+                g + (1.0 - g) * factor,
+                b + (1.0 - b) * factor)
+    else:
+        f = -factor
+        return (r * (1.0 - f), g * (1.0 - f), b * (1.0 - f))
 
 
 # ===========================================================================
@@ -479,7 +517,16 @@ def _run_or_load(predict_fn, X_bg, Y_adj, x_inst, game_type,
 
 
 def compute_global_effects(ds, game_type, n_instances, sample_size, seed):
-    """Average pure/partial/full and pairwise Möbius terms over n_instances."""
+    """Average pure/partial/full and full Mobius dict over n_instances.
+
+    Returns
+    -------
+    avg_shap : dict[int -> ndarray(T)]
+    avg_pure : dict[int -> ndarray(T)]
+    avg_full : dict[int -> ndarray(T)]
+    avg_pairs : dict[(i,j) -> ndarray(T)]    # 2-subset Mobius (legacy)
+    avg_mob  : dict[tuple -> ndarray(T)]     # ALL subsets, averaged
+    """
     _require_dir(GAME_CACHE_DIR)
     X_bg = ds['X_np']; Y_adj = ds['Y_adj']
     T = ds['T']; features = ds['features']; n_players = len(features)
@@ -488,9 +535,9 @@ def compute_global_effects(ds, game_type, n_instances, sample_size, seed):
     sum_shap = {i: np.zeros(T) for i in range(n_players)}
     sum_pure = {i: np.zeros(T) for i in range(n_players)}
     sum_full = {i: np.zeros(T) for i in range(n_players)}
-    # Accumulate pairwise Möbius terms for global edge weights
     sum_pairs = {(i,j): np.zeros(T)
                  for i in range(n_players) for j in range(i+1, n_players)}
+    sum_mob = {}  # accumulate ALL Mobius subsets
     for k, idx in enumerate(idxs):
         cache = _cache_path_global(ds['tag'], game_type, k)
         x_inst = X_bg[idx]
@@ -504,14 +551,21 @@ def compute_global_effects(ds, game_type, n_instances, sample_size, seed):
         for i in range(n_players):
             for j in range(i+1, n_players):
                 sum_pairs[(i,j)] += mob.get((i,j), np.zeros(T))
+        # Accumulate full Mobius dict
+        for S, m in mob.items():
+            if S not in sum_mob:
+                sum_mob[S] = np.zeros(T)
+            sum_mob[S] += m
         status = '(cached)' if os.path.isfile(cache) else ''
         print('    [{} {} global] {}/{} {}'.format(
             ds['tag'], game_type, k+1, n_instances, status))
     avg_pairs = {k: v/n_instances for k, v in sum_pairs.items()}
+    avg_mob   = {S: m/n_instances for S, m in sum_mob.items()}
     return ({i: sum_shap[i]/n_instances for i in range(n_players)},
             {i: sum_pure[i]/n_instances for i in range(n_players)},
             {i: sum_full[i]/n_instances for i in range(n_players)},
-            avg_pairs)
+            avg_pairs,
+            avg_mob)
 
 
 def compute_local_game(ds, x_profile, label):
@@ -524,7 +578,6 @@ def compute_local_game(ds, x_profile, label):
         _, pure, shap, full, mob = _load_cache(cache_path, n_players)
         return mob, shap, pure, full
     print('  Computing local game: {} {}'.format(ds['tag'], label))
-    # Compute all three games for local (needed for figs 2 and 4)
     results = {}
     for gtype in GAME_TYPES:
         x_inst = x_profile
@@ -542,7 +595,6 @@ def compute_local_game(ds, x_profile, label):
         shap = shapley_values(mob, n_players, T)
         pure = _pure(mob, n_players, T)
         full = _full(mob, n_players, T)
-        # Cache each game type separately
         cache = _cache_path_local(ds['tag'], label + '_' + gtype)
         _save_cache(cache, x_inst, pure, shap, full, mob, n_players)
         results[gtype] = (mob, shap, pure, full)
@@ -591,6 +643,50 @@ def load_per_instance_effects(ds, seed):
     return results, X_bg[idxs]
 
 
+def _cache_path_pdp(ds_tag, instance_k):
+    """Separate cache namespace for the larger PDP instance set."""
+    return os.path.join(
+        GAME_CACHE_DIR,
+        'pdp_{}_inst{:04d}_{}.npz'.format(ds_tag, instance_k, CACHE_VERSION))
+
+
+def load_per_instance_effects_pdp(ds, seed):
+    """Load or compute per-instance prediction effects for PDP plots."""
+    _require_dir(GAME_CACHE_DIR)
+    X_bg = ds['X_np']; Y_adj = ds['Y_adj']
+    features = ds['features']; T = ds['T']; n_players = len(features)
+
+    month_col = features.index('month')
+    selected  = []
+    for m in range(1, 13):
+        candidates = np.where(X_bg[:, month_col] == m)[0]
+        if len(candidates) > 0:
+            rng_m = np.random.default_rng(seed + m)
+            selected.append(int(rng_m.choice(candidates)))
+
+    rng  = np.random.default_rng(seed)
+    pool = np.setdiff1d(np.arange(len(X_bg)), selected)
+    rng.shuffle(pool)
+    n_extra = PDP_N_INSTANCES - len(selected)
+    if n_extra > 0:
+        selected = selected + pool[:n_extra].tolist()
+    idxs = np.array(selected[:PDP_N_INSTANCES])
+
+    results = []
+    for k, idx in enumerate(idxs):
+        cache  = _cache_path_pdp(ds['tag'], k)
+        x_inst = X_bg[idx]
+        _, pure, shap, full, _ = _run_or_load(
+            ds['model'].predict, X_bg, Y_adj,
+            x_inst, 'prediction', ds['sample']['prediction'],
+            seed + k, cache, features, T)
+        results.append({'x': x_inst, 'pure': pure,
+                        'partial': shap, 'full': full})
+        print('    [{} pdp pred] {}/{}'.format(
+            ds['tag'], k+1, PDP_N_INSTANCES))
+    return results, X_bg[idxs]
+
+
 # ===========================================================================
 # 10.  Plotting helpers
 # ===========================================================================
@@ -625,6 +721,8 @@ def _align_row(axes_list):
 
 def _draw_bar(ax, effect_dicts, K, features, fs, legend_bbox=None,
               x_fmt=None):
+    """Bar plot with three SHADES of the same feature color for
+    pure / partial / full (light / medium / dark).  No hatches."""
     p = len(features)
     imps = {et: {i: float(np.sum(np.abs(apply_kernel(effect_dicts[et][i], K))))
                  for i in range(p)}
@@ -633,13 +731,15 @@ def _draw_bar(ax, effect_dicts, K, features, fs, legend_bbox=None,
     y_pos   = np.arange(len(order))
     bar_h   = 0.25
     offsets = {'pure':-bar_h, 'partial':0.0, 'full':bar_h}
-    alphas  = {'pure':0.55,   'partial':0.90, 'full':0.55}
-    hatches = {'pure':'//',   'partial':'',   'full':'\\\\'}
+    # Light / medium / dark shades of feature color
+    shade_factors = {'pure': 0.55, 'partial': 0.0, 'full': -0.40}
     for et in _EFFECT_TYPES:
+        sf = shade_factors[et]
+        bar_colors = [_shade_color(FEAT_COLORS[features[i]], sf) for i in order]
         ax.barh(y_pos+offsets[et],
                 [imps[et][i] for i in order], height=bar_h,
-                color=[FEAT_COLORS[features[i]] for i in order],
-                alpha=alphas[et], hatch=hatches[et], label=et)
+                color=bar_colors, alpha=1.0, label=et,
+                edgecolor='none')
     ax.set_yticks(y_pos)
     ax.set_yticklabels([features[i] for i in order], fontsize=fs.tick)
     ax.axvline(0, color='gray', lw=0.8, ls=':')
@@ -649,11 +749,21 @@ def _draw_bar(ax, effect_dicts, K, features, fs, legend_bbox=None,
     ax.set_title('Time-aggregated', fontsize=fs.title, fontweight='bold')
     if x_fmt is not None:
         ax.xaxis.set_major_formatter(x_fmt)
+    # Legend with neutral grey-shade swatches so it reads as a shading legend,
+    # independent of any specific feature color.
+    leg_handles = [
+        Patch(facecolor=_shade_color('#888888',  0.55), edgecolor='none',
+              label='pure (light)'),
+        Patch(facecolor=_shade_color('#888888',  0.0),  edgecolor='none',
+              label='partial (medium)'),
+        Patch(facecolor=_shade_color('#888888', -0.40), edgecolor='none',
+              label='full (dark)'),
+    ]
     leg_kwargs = dict(fontsize=fs.legend, loc='upper left',
                       bbox_to_anchor=(1.02, 1.0),
                       bbox_transform=ax.transAxes,
                       borderaxespad=0., framealpha=0.9)
-    ax.legend(**leg_kwargs)
+    ax.legend(handles=leg_handles, **leg_kwargs)
 
 def _add_bottom_legends_energy(fig, features, top_feats, fs,
                                 feat_bbox=(0.04, 0.025),
@@ -697,9 +807,12 @@ def _network_importances(mob, shap, p, T, K, effect_type='partial'):
             if effect_type == 'pure':
                 raw = mob.get((i,j), np.zeros(T))
             elif effect_type == 'partial':
+                # Shapley interaction index (Grabisch & Roubens 1999):
+                # I^Sh_{ij} = sum_{S supseteq {i,j}} m_S / (|S| - 1)
                 raw = np.zeros(T)
                 for S, m in mob.items():
-                    if i in S and j in S: raw = raw + m/len(S)
+                    if i in S and j in S:
+                        raw = raw + m / (len(S) - 1)
             else:
                 raw = np.zeros(T)
                 for S, m in mob.items():
@@ -709,8 +822,19 @@ def _network_importances(mob, shap, p, T, K, effect_type='partial'):
     return node_imp, edge_imp, node_sign
 
 def _network_importances_global(avg_shap, avg_pure, avg_full, avg_pairs,
-                                 p, T, K, effect_type='full'):
-    """Compute network node/edge importances from global averaged effects."""
+                                 p, T, K, effect_type='full',
+                                 avg_mob=None):
+    """Compute network node/edge importances from global averaged effects.
+
+    Edges:
+      pure    : raw m_{ij}                    (= avg_pairs[(i,j)])
+      partial : Shapley interaction index (Grabisch & Roubens 1999):
+                I^Sh_{ij} = sum_{S supseteq {i,j}} m_S / (|S| - 1)
+      full    : sum_{S supseteq {i,j}} m_S
+
+    For partial / full we need the FULL averaged Mobius dict (avg_mob).
+    If avg_mob is None we fall back to pairwise-only (legacy behaviour).
+    """
     if effect_type == 'pure':
         eff = avg_pure
     elif effect_type == 'partial':
@@ -725,7 +849,20 @@ def _network_importances_global(avg_shap, avg_pure, avg_full, avg_pairs,
     edge_imp = {}
     for i in range(p):
         for j in range(i+1, p):
-            raw = avg_pairs.get((i,j), np.zeros(T))
+            if effect_type == 'pure' or avg_mob is None:
+                raw = avg_pairs.get((i,j), np.zeros(T))
+            elif effect_type == 'partial':
+                # Shapley interaction index (Grabisch & Roubens 1999):
+                # I^Sh_{ij} = sum_{S supseteq {i,j}} m_S / (|S| - 1)
+                raw = np.zeros(T)
+                for S, m in avg_mob.items():
+                    if i in S and j in S:
+                        raw = raw + m / (len(S) - 1)
+            else:  # full
+                raw = np.zeros(T)
+                for S, m in avg_mob.items():
+                    if i in S and j in S:
+                        raw = raw + m
             val = float(np.trapz(apply_kernel(raw, K), t_grid))
             if abs(val) > 0:
                 edge_imp[(i,j)] = val
@@ -733,7 +870,7 @@ def _network_importances_global(avg_shap, avg_pure, avg_full, avg_pairs,
 
 
 def _draw_network(ax, features, node_imp, edge_imp, node_sign,
-                  title, fs_title=None):
+                  title, fs_title=None, fs_label=None):
     import math
     fs_t = fs_title if fs_title is not None else FS_TITLE
     p = len(features)
@@ -742,7 +879,8 @@ def _draw_network(ax, features, node_imp, edge_imp, node_sign,
     ax.set_aspect('equal'); ax.axis('off')
     if title: ax.set_title(title, fontsize=fs_t, fontweight='bold', pad=4)
     max_imp  = float(node_imp.max()) if node_imp.max() > 0 else 1.0
-    node_r   = {i: 0.09 + 0.23*(node_imp[i]/max_imp) for i in range(p)}
+    # Slightly larger floor so labels never crowd small nodes
+    node_r   = {i: 0.13 + 0.20*(node_imp[i]/max_imp) for i in range(p)}
     max_edge = max((abs(v) for v in edge_imp.values()), default=1.0)
     max_edge = max(max_edge, 1e-12)
     for (i,j), val in edge_imp.items():
@@ -752,17 +890,22 @@ def _draw_network(ax, features, node_imp, edge_imp, node_sign,
         alph = 0.30 + 0.60*abs(val)/max_edge
         ax.plot([xi,xj],[yi,yj], color=col, lw=lw, alpha=alph,
                 solid_capstyle='round', zorder=1)
+    import matplotlib.patheffects as path_effects
     for i in range(p):
         x, y = pos[i]; r = node_r[i]
         fc = _NODE_POS if node_sign[i] >= 0 else _NODE_NEG
+        # Solid colored disk only (no white inner circle).
         ax.add_patch(plt.Circle((x,y), r, color=fc, ec='white',
-                                linewidth=1.2, zorder=2, alpha=0.88))
-        ax.add_patch(plt.Circle((x,y), r*0.52, color='white', ec='none',
-                                zorder=3, alpha=0.95))
+                                linewidth=1.2, zorder=2, alpha=0.92))
         abbr = FEAT_ABBR.get(features[i], features[i][:3])
-        ax.text(x, y, abbr, ha='center', va='center',
-                fontsize=max(7.0, r*34), fontweight='bold',
-                color='#222', zorder=4)
+        node_fs = fs_label if fs_label is not None else max(8.0, r*30)
+        # Dark text with a thin white outline for readability on the
+        # colored disk; works well on both green and red backgrounds.
+        txt = ax.text(x, y, abbr, ha='center', va='center',
+                      fontsize=node_fs, fontweight='bold',
+                      color='#1a1a1a', zorder=4)
+        txt.set_path_effects([
+            path_effects.withStroke(linewidth=2.2, foreground='white')])
     pad = 0.36
     ax.set_xlim(-1.0-pad, 1.0+pad); ax.set_ylim(-1.0-pad, 1.0+pad)
 
@@ -771,76 +914,67 @@ def _draw_network(ax, features, node_imp, edge_imp, node_sign,
 # 12.  FIG 0 — Single-row: heatmap + network + gap, per dataset
 # ===========================================================================
 
-def _add_bg_box(fig, axes_list, color, pad=0.014,
-                extra_bottom=0.0, extra_top=0.0):
-    """Draw colored background box. extra_bottom/extra_top extend in
-    figure-fraction units to cover below-axes legends and above-axes titles."""
-    renderer = fig.canvas.get_renderer()
-    xmins, ymins, xmaxs, ymaxs = [], [], [], []
-    for ax in axes_list:
-        bb = ax.get_window_extent(renderer=renderer)
-        bb_fig = bb.transformed(fig.transFigure.inverted())
-        xmins.append(bb_fig.x0); ymins.append(bb_fig.y0)
-        xmaxs.append(bb_fig.x1); ymaxs.append(bb_fig.y1)
-    x0 = min(xmins) - pad
-    y0 = min(ymins) - pad - extra_bottom
-    w  = max(xmaxs) - x0 + pad
-    h  = max(ymaxs) - y0 + pad + extra_top
-    rect = FancyBboxPatch((x0, y0), w, h, boxstyle='round,pad=0.006',
-                          linewidth=1.4, edgecolor=color, facecolor=color,
-                          alpha=0.10, transform=fig.transFigure,
-                          zorder=0, clip_on=False)
-    fig.add_artist(rect)
-
-
 def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
                    K_ih, K_ne, global_sens_ih, global_sens_ne):
     """
     Single row, 6 panels:
     [IHEPC heatmap | IHEPC sensitivity network | IHEPC sensitivity gap |
      NESO heatmap  | NESO sensitivity network  | NESO sensitivity gap  ]
+
+    v7 changes:
+      * Heatmap: TwoSlopeNorm anchored at 0 (white=0, blue=neg, red=pos).
+      * Removed \\Phi from titles.
+      * Networks enlarged toward heatmaps only (not toward sens. panel).
+      * Bumped font sizes globally for this figure.
     """
-    FS_SUP=17; FS_T=14; FS_AX=13; FS_TK=11; FS_LEG=11
+    # Bumped font sizes
+    FS_SUP=20; FS_T=16; FS_AX=15; FS_TK=13; FS_LEG=13; FS_NODE=12
 
     ID_ALPHA=0.40; ID_LW=1.6; MX_LW=2.2
 
-    fig = plt.figure(figsize=(28, 5.5))
+    fig = plt.figure(figsize=(28, 5.8))
     gs  = GridSpec(1, 7, figure=fig,
-                   width_ratios=[1.4, 1.0, 1.6, 0.18, 1.4, 1.0, 1.6],
+                   width_ratios=[1.25, 1.2, 1.6, 0.18, 1.25, 1.2, 1.6],
                    wspace=0.28, left=0.04, right=0.98,
                    top=0.78, bottom=0.20)
 
     ax_ih_heat = fig.add_subplot(gs[0])
     ax_ih_net  = fig.add_subplot(gs[1])
     ax_ih_gap  = fig.add_subplot(gs[2])
-    ax_gap_spacer = fig.add_subplot(gs[3])  # invisible spacer
+    ax_gap_spacer = fig.add_subplot(gs[3])
     ax_gap_spacer.set_visible(False)
     ax_ne_heat = fig.add_subplot(gs[4])
     ax_ne_net  = fig.add_subplot(gs[5])
     ax_ne_gap  = fig.add_subplot(gs[6])
 
     fig.suptitle(
-        'Energy demand: correlation structure drives explanation shape\n'
-        'UCI IHEPC (single household, kW)  vs  NESO GB Demand (national grid, MW)',
+        'Hilbert-valued explanation framework: energy demand — '
+        'correlation structure drives explanation shape\n'
+        'UCI IHEPC (single household, kW)  vs  NESO GB Demand '
+        '(national grid, MW)',
         fontsize=FS_SUP, fontweight='bold', y=0.98)
 
-    # ── Heatmaps ──────────────────────────────────────────────────────────
+    # ── Heatmaps (canonical correlation range -1..1, white at 0) ─────────
     def _heatmap(ax, ds, K, tag):
         T, tl = ds['T'], ds['tlabels']
         step  = max(1, T//6); ticks = list(range(0, T, step))
+        # Symmetric colorbar in canonical correlation range. White sits at
+        # 0; the colorbar is uniformly spaced so unit distances are honest.
         im = ax.imshow(K, aspect='equal', origin='upper',
-                       cmap='RdBu_r', vmin=-0.2, vmax=1.0)
+                       cmap='RdBu_r', vmin=-1.0, vmax=1.0)
         ax.set_xticks(ticks)
         ax.set_xticklabels([tl[i] for i in ticks],
-                           rotation=45, ha='right', fontsize=9.5)
+                           rotation=45, ha='right', fontsize=FS_TK)
         ax.set_yticks(ticks)
-        ax.set_yticklabels([tl[i] for i in ticks], fontsize=9.0)
+        ax.set_yticklabels([tl[i] for i in ticks], fontsize=FS_TK)
         ax.set_title(DS_LABEL[tag].replace('\n',' ') + '\ncorrelation kernel $K$',
                      fontsize=FS_AX, fontweight='bold', color=DS_COLOR[tag])
         am = (ds['morning'][0]+ds['morning'][1])//2
         ax.axhline(am, color='white', lw=0.8, ls='--', alpha=0.6)
         ax.axvline(am, color='white', lw=0.8, ls='--', alpha=0.6)
-        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.03).ax.tick_params(labelsize=9.0)
+        cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.03,
+                          ticks=[-1.0, -0.5, 0.0, 0.5, 1.0])
+        cb.ax.tick_params(labelsize=FS_TK)
 
     _heatmap(ax_ih_heat, ds_ih, K_ih, 'ihepc')
     _heatmap(ax_ne_heat, ds_ne, K_ne, 'neso')
@@ -855,75 +989,28 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
         features = ds['features']; p, T = len(features), ds['T']
         K = K_ih if tag == 'ihepc' else K_ne
         g_sens = global_sens_ih if tag == 'ihepc' else global_sens_ne
-        avg_shap, avg_pure, avg_full, avg_pairs = g_sens
+        # Unpack 5-tuple (avg_shap, avg_pure, avg_full, avg_pairs, avg_mob)
+        avg_shap, avg_pure, avg_full, avg_pairs, avg_mob = g_sens
         ni, ei, ns = _network_importances_global(
-            avg_shap, avg_pure, avg_full, avg_pairs, p, T, K, 'full')
+            avg_shap, avg_pure, avg_full, avg_pairs, p, T, K, 'full',
+            avg_mob=avg_mob)
         _draw_network(ax, features, ni, ei, ns,
-                      '{} sens.\nfull (corr)'.format(tag.upper()),
-                      fs_title=FS_T)
+                      '{} sensitivity\nfull (corr.)'.format(tag.upper()),
+                      fs_title=FS_T, fs_label=FS_NODE)
         ax.legend(handles=net_handles, loc='lower center', ncol=2,
-                  fontsize=FS_LEG-1.5, framealpha=0.88,
-                  bbox_to_anchor=(0.5,-0.12), bbox_transform=ax.transAxes,
-                  borderpad=0.4, handlelength=1.2)
+                  fontsize=FS_LEG, framealpha=0.88,
+                  bbox_to_anchor=(0.5,-0.10), bbox_transform=ax.transAxes,
+                  borderpad=0.45, handlelength=1.4)
 
-    # ── Sensitivity gap panels ─────────────────────────────────────────
-    def _gap_panel(ax, ds, mob_sens, K_corr, K_id, tag):
-        features = ds['features']; p, T = len(features), ds['T']
-        t_grid = ds['t_grid']
-        pure_eff = _pure(mob_sens, p, T)
-        full_eff = _full(mob_sens, p, T)
-        gap = {i: full_eff[i] - pure_eff[i] for i in range(p)}
-        gap_imp = {i: float(np.sum(np.abs(apply_kernel(gap[i], K_corr))))
-                   for i in range(p)}
-        fi  = max(gap_imp, key=gap_imp.get)
-        col = FEAT_COLORS[features[fi]]
-        pure_id = apply_kernel(pure_eff[fi], K_id)
-        full_id = apply_kernel(full_eff[fi], K_id)
-        pure_c  = apply_kernel(pure_eff[fi], K_corr)
-        full_c  = apply_kernel(full_eff[fi], K_corr)
-        gap_c   = apply_kernel(gap[fi], K_corr)
-        # Identity kernel — faded
-        ax.plot(t_grid, full_id, color=col, lw=ID_LW, ls='-', alpha=ID_ALPHA, zorder=2)
-        ax.plot(t_grid, pure_id, color=col, lw=ID_LW, ls='--', alpha=ID_ALPHA, zorder=2)
-        # Correlation kernel — full opacity
-        ax.fill_between(t_grid, pure_c, full_c,
-                        color=col, alpha=0.20, label='gap region', zorder=1)
-        ax.plot(t_grid, full_c, color=col, lw=MX_LW, ls='-',
-                label=r'Full (Total Sobol)', zorder=3)
-        ax.plot(t_grid, pure_c, color=col, lw=MX_LW, ls='--',
-                label=r'Pure (Closed Sobol)', zorder=3)
-        ax.plot(t_grid, gap_c, color='black', lw=1.4, ls=':', alpha=0.7,
-                label=r'Gap $\Delta\tau_i$', zorder=3)
-        ax.axhline(0, color='gray', lw=0.5, ls=':')
-        _xticks(ax, ds, sparse=True)
-        ax.tick_params(labelsize=FS_TK)
-        ax.set_xlabel('Time', fontsize=FS_AX)
-        ax.set_ylabel(ds['ylabel']['sensitivity'], fontsize=FS_AX)
-        integ = float(np.trapz(np.abs(gap_c), t_grid))
-        ax.set_title(
-            'Sensitivity gap — corr. kernel\n'
-            '{} — {} | $\\int|\\Delta\\tau_i|\\,dt={:.3g}$'.format(
-                DS_LABEL[tag].split('\n')[0], features[fi], integ),
-            fontsize=FS_T-1, fontweight='bold', color=DS_COLOR[tag])
-        extra_id = Line2D([0],[0], color='gray', lw=ID_LW, ls='-',
-                          alpha=ID_ALPHA, label='identity (faded)')
-        handles, labels = ax.get_legend_handles_labels()
-        ax.legend(handles+[extra_id], labels+['identity (faded)'],
-                  fontsize=FS_LEG, loc='upper center',
-                  bbox_to_anchor=(0.5,-0.22), ncol=3, framealpha=0.85)
-        _shade(ax, ds)
-
+    # ── Sensitivity full-effect (total Sobol) panels ──────────────────────
     def _sens_full_panel(ax, ds, global_sens, K_corr, K_id, tag,
                           force_features=None):
-        """Show global total-Sobol (full) sensitivity effect for 1-2 features:
-        identity kernel faded, correlation kernel full opacity."""
         features = ds['features']; p, T = len(features), ds['T']
         t_grid = ds['t_grid']
         avg_full = global_sens[2]  # full (total Sobol)
         if force_features is None:
             imps = {i: float(np.sum(np.abs(apply_kernel(avg_full[i], K_corr))))
                     for i in range(p)}
-            # top-2 by global full importance
             fis = sorted(imps, key=imps.get, reverse=True)[:2]
         else:
             fis = [features.index(f) for f in force_features]
@@ -952,7 +1039,7 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
         ax.set_ylabel(ylabel, fontsize=FS_AX)
         feat_str = ', '.join(features[fi] for fi in fis)
         ax.set_title(
-            r'Full $\Phi_i$ = Total Sobol — corr. kernel' + '\n'
+            'Total Sobol — corr. kernel\n'
             '{} — {}'.format(DS_LABEL[tag].split('\n')[0], feat_str),
             fontsize=FS_T-1, fontweight='bold', color=DS_COLOR[tag])
         corr_handles = [
@@ -963,8 +1050,8 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
         extra_id = Line2D([0],[0], color='gray', lw=ID_LW, ls='-',
                           alpha=ID_ALPHA, label='identity (faded)')
         ax.legend(handles=corr_handles + [extra_id],
-                  fontsize=FS_LEG, loc='upper center',
-                  bbox_to_anchor=(0.5, -0.23), ncol=len(fis)+1,
+                  fontsize=10, loc='upper center',
+                  bbox_to_anchor=(0.5, -0.25), ncol=len(fis)+1,
                   framealpha=0.85)
         _shade(ax, ds)
 
@@ -975,26 +1062,44 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
     _sens_full_panel(ax_ne_gap, ds_ne, global_sens_ne, K_ne, K_id_ne,
                      'neso',  force_features=['month', 'season'])
 
+    # Force a draw so positions are computed before we shift axes.
+    fig.canvas.draw()
+
+    # Enlarge networks toward the heatmap side ONLY (not toward sens. panel).
+    # We shift the network axis leftward AND widen it on the left, leaving
+    # its right edge unchanged so the gap to the sensitivity panel is fixed.
+    SHIFT_FRAC = 0.45  # how much of the heatmap-network gap to absorb
+    for ax_heat, ax_net in [(ax_ih_heat, ax_ih_net),
+                            (ax_ne_heat, ax_ne_net)]:
+        bb_h = ax_heat.get_position()
+        bb_n = ax_net.get_position()
+        gap = bb_n.x0 - bb_h.x1
+        if gap <= 0:
+            continue
+        delta = SHIFT_FRAC * gap
+        new_x0 = bb_n.x0 - delta
+        new_w  = bb_n.width + delta  # right edge unchanged
+        ax_net.set_position([new_x0, bb_n.y0, new_w, bb_n.height])
+
+    # Re-render to capture the moved positions in subsequent bbox queries.
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
 
-    # Get NESO left edge for box clipping
     ne_xmin = min(ax.get_window_extent(renderer).transformed(
         fig.transFigure.inverted()).x0
         for ax in [ax_ne_heat, ax_ne_net, ax_ne_gap])
-    x_split_ne = ne_xmin - 0.018   # NESO box left edge
+    x_split_ne = ne_xmin - 0.060
 
     def _bg_box_clipped(axes_list, color, xmin_clip, xmax_clip, pad=0.016,
-                        extra_bottom=0.18, extra_top=0.07, extra_right=0.0):
-        """Box covering axes group, clipped to [xmin_clip, xmax_clip],
-        extended downward to cover below-axes legends and upward for titles."""
+                        extra_bottom=0.18, extra_top=0.07,
+                        extra_left=0.0, extra_right=0.0):
         xmins, ymins, xmaxs, ymaxs = [], [], [], []
         for ax in axes_list:
             bb = ax.get_window_extent(renderer=renderer)
             bb_fig = bb.transformed(fig.transFigure.inverted())
             xmins.append(bb_fig.x0); ymins.append(bb_fig.y0)
             xmaxs.append(bb_fig.x1); ymaxs.append(bb_fig.y1)
-        x0 = max(min(xmins) - pad, xmin_clip)
+        x0 = max(min(xmins) - pad - extra_left, xmin_clip)
         y0 = min(ymins) - pad - extra_bottom
         x1 = min(max(xmaxs) + pad + extra_right, xmax_clip)
         y1 = max(ymaxs) + pad + extra_top
@@ -1009,7 +1114,8 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
                     DS_COLOR['ihepc'], xmin_clip=0.0, xmax_clip=x_split_ne,
                     extra_right=0.02)
     _bg_box_clipped([ax_ne_heat, ax_ne_net, ax_ne_gap],
-                    DS_COLOR['neso'], xmin_clip=x_split_ne, xmax_clip=1.0)
+                    DS_COLOR['neso'], xmin_clip=0.0, xmax_clip=1.02,
+                    extra_left=0.025, extra_right=0.015)
     return fig
 
 
@@ -1018,13 +1124,6 @@ def fig0_main_body(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
 # ===========================================================================
 
 def fig1_global_risk_sensitivity(ds, global_effects, fs=None):
-    """
-    4 rows x 4 cols:
-      row 0: risk,        identity kernel
-      row 1: risk,        correlation kernel
-      row 2: sensitivity, identity kernel
-      row 3: sensitivity, correlation kernel
-    """
     if fs is None: fs = _fs(0)
     features = ds['features']; p = len(features); T = ds['T']
     tag = ds['tag']
@@ -1052,7 +1151,8 @@ def fig1_global_risk_sensitivity(ds, global_effects, fs=None):
 
     top_k = 5; top_feats = None
     for r, (gtype, K, klabel, eff_labels, row_title) in enumerate(row_specs):
-        avg_shap, avg_pure, avg_full, _ = global_effects[gtype]
+        # 5-tuple now: (avg_shap, avg_pure, avg_full, avg_pairs, avg_mob)
+        avg_shap, avg_pure, avg_full, _, _ = global_effects[gtype]
         effect_dicts = {'pure':avg_pure, 'partial':avg_shap, 'full':avg_full}
         imps = {i: float(np.sum(np.abs(apply_kernel(avg_shap[i], K))))
                 for i in range(p)}
@@ -1081,7 +1181,6 @@ def fig1_global_risk_sensitivity(ds, global_effects, fs=None):
         _draw_bar(axes[r, 3], effect_dicts, K, features, fs)
         _align_row([axes[r, c] for c in range(3)])
 
-    # Stacked bottom legends
     feat_handles = [
         Line2D([0],[0], color=FEAT_COLORS[features[fi]], lw=1.8, ls='-',
                label=features[fi])
@@ -1108,11 +1207,6 @@ def fig1_global_risk_sensitivity(ds, global_effects, fs=None):
 # ===========================================================================
 
 def fig2_local_prediction(ds, local_games, fs=None):
-    """
-    2 rows x 4 cols:
-      row 0: prediction, identity kernel
-      row 1: prediction, correlation kernel
-    """
     if fs is None: fs = _fs(0)
     features = ds['features']; p = len(features); T = ds['T']
     tag = ds['tag']
@@ -1185,9 +1279,6 @@ def fig2_local_prediction(ds, local_games, fs=None):
 # ===========================================================================
 
 def _top2_features(global_effects, features):
-    """Select top-2 features by global SHAP importance under identity kernel.
-    Identity kernel gives well-distributed importance across all feature types
-    and avoids empty bins in PDP plots caused by correlation-kernel weighting."""
     p     = len(features)
     K_id  = kernel_identity(len(global_effects['prediction'][0][0]))
     avg_shap = global_effects['prediction'][0]
@@ -1198,23 +1289,25 @@ def _top2_features(global_effects, features):
 
 def _pdp_panel_energy(ax, fi, etype, K, X_background, per_instance,
                       features, selected_t_idxs, t_cmap, ds, fs):
-    """PDP-style panel. Discrete features use distinct values as bin centers."""
-    feat_name = features[fi]
-    feat_vals = X_background[:, fi]
-    n_inst    = len(per_instance)
+    feat_name  = features[fi]
+    feat_vals  = X_background[:, fi]
+    n_inst     = len(per_instance)
 
     if feat_name in CONTINUOUS_FEATURES:
         fmin, fmax = feat_vals.min(), feat_vals.max()
         bins        = np.linspace(fmin, fmax, N_FEAT_BINS+1)
         bin_centers = 0.5 * (bins[:-1] + bins[1:])
-        bin_idx     = np.clip(np.digitize(feat_vals, bins)-1, 0, N_FEAT_BINS-1)
+        bin_idx     = np.clip(np.digitize(feat_vals, bins)-1,
+                              0, N_FEAT_BINS-1)
         n_bins      = N_FEAT_BINS
+        is_discrete = False
     else:
         unique_vals = np.sort(np.unique(feat_vals))
         bin_centers = unique_vals
         n_bins      = len(unique_vals)
         bin_idx     = np.array([np.argmin(np.abs(unique_vals - v))
                                 for v in feat_vals])
+        is_discrete = True
 
     T = ds['T']
     bin_effects = np.full((n_bins, T), np.nan)
@@ -1237,37 +1330,31 @@ def _pdp_panel_energy(ax, fi, etype, K, X_background, per_instance,
     ax.plot(bin_centers[valid], pdp[valid],
             color='black', lw=2.5, ls='-', zorder=5, label='time-agg.')
     ax.axhline(0, color='gray', lw=0.5, ls=':')
-    # Lock x-axis to actual data range — critical for discrete features
-    # (prevents any subsequent call from expanding the axis)
     if valid.any():
         xlo = bin_centers[valid].min()
         xhi = bin_centers[valid].max()
-        xrange = xhi - xlo
-        if feat_name in CONTINUOUS_FEATURES:
-            # Small proportional margin for continuous features
-            margin = xrange * 0.03
-        else:
-            # Fixed half-step margin for discrete features
+        if is_discrete:
             margin = 0.3
-        ax.set_xlim(xlo - margin, xhi + margin)
-        ax.autoscale(False, axis='x')
+            ax.set_xlim(xlo - margin, xhi + margin)
+            ax.set_xticks(bin_centers[valid])
+            ax.xaxis.set_major_formatter(
+                matplotlib.ticker.FuncFormatter(
+                    lambda v, _: '{:.0f}'.format(v)))
+            ax.autoscale(False, axis='x')
+        else:
+            xrange = xhi - xlo
+            margin = xrange * 0.03
+            ax.set_xlim(xlo - margin, xhi + margin)
+            ax.autoscale(False, axis='x')
+            ax.xaxis.set_major_locator(
+                matplotlib.ticker.MaxNLocator(nbins=6, prune='both'))
     ax.tick_params(labelsize=fs.tick)
-    ax.xaxis.set_major_locator(
-        matplotlib.ticker.MaxNLocator(nbins=6, prune='both'))
     for lbl in ax.get_xticklabels():
         lbl.set_rotation(45); lbl.set_ha('right'); lbl.set_fontsize(fs.tick)
     ax.set_xlabel(feat_name, fontsize=fs.axis)
-    # No shading — x-axis is feature values, not time
 
 
 def fig3_global_pdp(ds, global_effects, per_instance, X_background, fs=None):
-    """
-    4 rows x 3 cols (no bar panel):
-      row 0: feature 1, identity kernel
-      row 1: feature 1, correlation kernel
-      row 2: feature 2, identity kernel
-      row 3: feature 2, correlation kernel
-    """
     if fs is None: fs = _fs(0)
     features = ds['features']; tag = ds['tag']
     K_id   = kernel_identity(ds['T'])
@@ -1275,7 +1362,6 @@ def fig3_global_pdp(ds, global_effects, per_instance, X_background, fs=None):
 
     top2 = _top2_features(global_effects, features)
 
-    # Selected time points: spread across the day
     T = ds['T']
     selected_t_idxs = [0, T//5, 2*T//5, 3*T//5, T-1]
     t_cmap = cm.get_cmap('plasma', len(selected_t_idxs))
@@ -1309,7 +1395,6 @@ def fig3_global_pdp(ds, global_effects, per_instance, X_background, fs=None):
 
         _align_row([axes[r, c] for c in range(3)])
 
-    # Legend: time points + time-aggregated — bottom center
     t_handles = [
         Line2D([0],[0], color=t_cmap(i/(len(selected_t_idxs)-1)),
                lw=1.4, ls='--', label=ds['tlabels'][ti])
@@ -1329,12 +1414,6 @@ def fig3_global_pdp(ds, global_effects, per_instance, X_background, fs=None):
 # ===========================================================================
 
 def fig4_interactions(ds, local_games, fs=None):
-    """
-    2 rows x 2 cols:
-      row 0: identity kernel
-      row 1: correlation kernel
-    Top-5 pairs as lines. Solid = identity, dashed = correlation.
-    """
     if fs is None: fs = _fs(0)
     ax_tick_fs  = max(fs.tick-2, 6)
     ax_label_fs = max(fs.axis-1, 7)
@@ -1357,7 +1436,7 @@ def fig4_interactions(ds, local_games, fs=None):
     fig, axes = plt.subplots(2, 2, figsize=(12, 4.2*2),
                              gridspec_kw={'width_ratios':[3,1.8]})
     fig.suptitle(
-        'Local pairwise interaction effects $m_{{ij}}(t)$ \u2014 top-5 pairs'
+        'Local pairwise interaction effects \u2014 top-5 pairs'
         '\n{}'.format(DS_LABEL[tag].replace('\n','  ')),
         fontsize=fs.suptitle, fontweight='bold')
 
@@ -1383,32 +1462,36 @@ def fig4_interactions(ds, local_games, fs=None):
         ax.tick_params(labelsize=ax_tick_fs)
         ax.set_xlabel('Time', fontsize=ax_label_fs)
         ax.set_ylabel(ds['ylabel']['prediction'], fontsize=ax_label_fs)
-        ax.set_title(r'$m_{ij}(t)$', fontsize=fs.title, fontweight='bold')
+        ax.set_title('Pairwise interaction', fontsize=fs.title, fontweight='bold')
         ax.text(-0.18, 0.5, row_label, transform=ax.transAxes,
                 fontsize=ax_label_fs-1, va='center', ha='right',
                 rotation=90, color='#333', fontweight='bold')
         _align_row([axes[r, 0]])
 
-        # Bar panel
         ax_bar = axes[r, 1]
-        pair_imps, pair_lbls = [], []
+        row_imps = []
         for i, j in top5:
-            raw = mob.get((i,j), np.zeros(T))
-            pair_imps.append(
-                float(np.sum(np.abs(apply_kernel(raw, K)))))
-            pair_lbls.append('{} x {}'.format(features[i], features[j]))
-        y_pos = np.arange(len(top5))
-        ax_bar.barh(y_pos, pair_imps,
-                    color=PAIR_COLORS[:len(top5)], alpha=0.85)
+            raw = mob.get((i, j), np.zeros(T))
+            imp = float(np.sum(np.abs(apply_kernel(raw, K))))
+            row_imps.append((imp, (i, j)))
+        row_imps_sorted = sorted(row_imps, key=lambda x: x[0], reverse=True)
+        y_pos = np.arange(len(row_imps_sorted))
+        ax_bar.barh(
+            y_pos,
+            [imp for imp, _ in row_imps_sorted],
+            color=[PAIR_COLORS[top5.index(ij)] for _, ij in row_imps_sorted],
+            alpha=0.85)
         ax_bar.set_yticks(y_pos)
-        ax_bar.set_yticklabels(pair_lbls, fontsize=ax_tick_fs-1)
-        ax_bar.set_xlabel(r'$\int|m_{ij}|\,dt$', fontsize=ax_label_fs)
+        ax_bar.set_yticklabels(
+            ['{} x {}'.format(features[i], features[j])
+             for _, (i, j) in row_imps_sorted],
+            fontsize=ax_tick_fs-1)
+        ax_bar.set_xlabel(r'$\int|\cdot|\,dt$', fontsize=ax_label_fs)
         ax_bar.spines['top'].set_visible(False)
         ax_bar.spines['right'].set_visible(False)
         ax_bar.tick_params(labelsize=ax_tick_fs)
         ax_bar.set_title('Time-aggregated', fontsize=fs.title, fontweight='bold')
 
-    # Stacked legends at bottom
     pair_handles = [
         Line2D([0],[0], color=PAIR_COLORS[k], lw=1.8,
                label='{} x {}'.format(features[i], features[j]))
@@ -1435,47 +1518,41 @@ def fig4_interactions(ds, local_games, fs=None):
 # ===========================================================================
 
 def fig5_networks_global(ds_ih, ds_ne, global_ih, global_ne, K_ih, K_ne):
-    """
-    4 rows x 3 cols:
-      row 0: IHEPC sensitivity (partial, corr kernel)
-      row 1: IHEPC risk        (partial, corr kernel)
-      row 2: NESO  sensitivity (partial, corr kernel)
-      row 3: NESO  risk        (partial, corr kernel)
-    Columns: pure / partial / full
-    """
+    """Sensitivity-only network plots: IHEPC + NESO, pure + partial.
+    Uses correct Shapley interaction index edges via avg_mob."""
     row_specs = [
-        (ds_ih, global_ih, 'sensitivity', K_ih, 'IHEPC Sensitivity'),
-        (ds_ih, global_ih, 'risk',        K_ih, 'IHEPC Risk'),
-        (ds_ne, global_ne, 'sensitivity', K_ne, 'NESO Sensitivity'),
-        (ds_ne, global_ne, 'risk',        K_ne, 'NESO Risk'),
+        (ds_ih, global_ih, K_ih, 'IHEPC Sensitivity'),
+        (ds_ne, global_ne, K_ne, 'NESO Sensitivity'),
     ]
-    col_labels = [r'Pure $m_i$', r'Partial $\phi_i$', r'Full $\Phi_i$']
+    col_labels = ['Pure', 'Partial']
+    col_etypes = ['pure', 'partial']
 
-    fig = plt.figure(figsize=(10, 12))
+    fig = plt.figure(figsize=(8.5, 9))
     fig.suptitle(
-        'Global network plots — correlation kernel\n'
-        'Sensitivity and Risk games — IHEPC and NESO',
-        fontsize=FS_SUPTITLE, fontweight='bold', y=0.99)
-    gs = gridspec.GridSpec(4, 3, figure=fig,
-                           hspace=0.10, wspace=0.08,
-                           left=0.09, right=0.98,
-                           top=0.93, bottom=0.06)
+        'Global sensitivity network plots — correlation kernel\n'
+        'IHEPC and NESO',
+        fontsize=FS_SUPTITLE, fontweight='bold', y=0.98)
+    gs = gridspec.GridSpec(2, 2, figure=fig,
+                           hspace=0.12, wspace=0.10,
+                           left=0.10, right=0.98,
+                           top=0.90, bottom=0.10)
 
-    for r, (ds, g_eff, gtype, K, row_label) in enumerate(row_specs):
+    for r, (ds, g_eff, K, row_label) in enumerate(row_specs):
         features = ds['features']; p = len(features); T = ds['T']
-        avg_shap, avg_pure, avg_full, avg_pairs = g_eff[gtype]
+        avg_shap, avg_pure, avg_full, avg_pairs, avg_mob = g_eff['sensitivity']
 
-        for c, etype in enumerate(_EFFECT_TYPES):
+        for c, etype in enumerate(col_etypes):
             ax = fig.add_subplot(gs[r, c])
             ni, ei, ns = _network_importances_global(
-                avg_shap, avg_pure, avg_full, avg_pairs, p, T, K, etype)
+                avg_shap, avg_pure, avg_full, avg_pairs, p, T, K, etype,
+                avg_mob=avg_mob)
             _draw_network(ax, features, ni, ei, ns,
                           col_labels[c] if r == 0 else '',
-                          fs_title=FS_TITLE)
+                          fs_title=FS_TITLE+1)
             if c == 0:
                 ax.text(-0.03, 0.5, row_label,
                         transform=ax.transAxes,
-                        fontsize=FS_AXIS, va='center', ha='right',
+                        fontsize=FS_AXIS+1, va='center', ha='right',
                         rotation=90, color='#333', fontweight='bold')
 
     leg_handles = [
@@ -1483,208 +1560,26 @@ def fig5_networks_global(ds_ih, ds_ne, global_ih, global_ne, K_ih, K_ne):
         Patch(facecolor=_NODE_NEG, edgecolor='none', label='Negative effect'),
     ]
     fig.legend(handles=leg_handles, loc='lower center', ncol=2,
-               fontsize=FS_LEGEND, framealpha=0.9,
-               bbox_to_anchor=(0.5, 0.01))
+               fontsize=FS_LEGEND+1, framealpha=0.9,
+               bbox_to_anchor=(0.5, 0.02))
     return fig
 
 
-# ===========================================================================
 # 18.  Main
 # ===========================================================================
 
-
-
-# ===========================================================================
-# 18b.  FIG 0 ALT — Two-row: IHEPC row 1, NESO row 2 (3 cols each)
-# ===========================================================================
-
-def fig0_two_row(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
-                 K_ih, K_ne, global_sens_ih, global_sens_ne):
-    """
-    2 rows x 3 cols:
-      row 0: IHEPC heatmap | IHEPC sens. network (full) | IHEPC total Sobol panel
-      row 1: NESO  heatmap | NESO  sens. network (full) | NESO  total Sobol panel
-    """
-    FS_SUP=21; FS_T=17; FS_AX=16; FS_TK=14; FS_LEG=14
-    ID_ALPHA=0.40; ID_LW=1.8; MX_LW=2.6
-
-    fig = plt.figure(figsize=(20, 14))
-    gs  = GridSpec(2, 3, figure=fig,
-                   width_ratios=[1.4, 2.0, 1.8],
-                   wspace=0.10, hspace=0.70,
-                   left=0.05, right=0.97,
-                   top=0.83, bottom=0.10)
-
-    axes = [[fig.add_subplot(gs[r, c]) for c in range(3)] for r in range(2)]
-
-    fig.suptitle(
-        'Energy demand: correlation structure drives explanation shape\n'
-        'UCI IHEPC (single household, kW)  vs  NESO GB Demand (national grid, MW)',
-        fontsize=FS_SUP, fontweight='bold', y=0.96)
-
-    def _heatmap(ax, ds, K, tag):
-        T, tl = ds['T'], ds['tlabels']
-        step  = max(1, T//6); ticks = list(range(0, T, step))
-        im = ax.imshow(K, aspect='equal', origin='upper',
-                       cmap='RdBu_r', vmin=-0.2, vmax=1.0)
-        ax.set_xticks(ticks)
-        ax.set_xticklabels([tl[i] for i in ticks],
-                           rotation=45, ha='right', fontsize=FS_TK)
-        ax.set_yticks(ticks)
-        ax.set_yticklabels([tl[i] for i in ticks], fontsize=FS_TK-0.5)
-        ax.set_title(DS_LABEL[tag].replace('\n',' ') + '\ncorrelation kernel $K$',
-                     fontsize=FS_AX, fontweight='bold', color=DS_COLOR[tag])
-        am = (ds['morning'][0]+ds['morning'][1])//2
-        ax.axhline(am, color='white', lw=0.8, ls='--', alpha=0.6)
-        ax.axvline(am, color='white', lw=0.8, ls='--', alpha=0.6)
-        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.03).ax.tick_params(labelsize=FS_TK-0.5)
-
-    _heatmap(axes[0][0], ds_ih, K_ih, 'ihepc')
-    _heatmap(axes[1][0], ds_ne, K_ne, 'neso')
-
-    net_handles = [Patch(facecolor=_NODE_POS, edgecolor='none', label='Positive'),
-                   Patch(facecolor=_NODE_NEG, edgecolor='none', label='Negative')]
-    for row_idx, (ax, ds, tag) in enumerate([
-        (axes[0][1], ds_ih, 'ihepc'),
-        (axes[1][1], ds_ne, 'neso'),
-    ]):
-        features = ds['features']; p, T = len(features), ds['T']
-        K = K_ih if tag == 'ihepc' else K_ne
-        g_sens = global_sens_ih if tag == 'ihepc' else global_sens_ne
-        avg_shap, avg_pure, avg_full, avg_pairs = g_sens
-        ni, ei, ns = _network_importances_global(
-            avg_shap, avg_pure, avg_full, avg_pairs, p, T, K, 'full')
-        _draw_network(ax, features, ni, ei, ns,
-                      '{} sens.\nfull (corr)'.format(tag.upper()),
-                      fs_title=FS_T)
-        ax.legend(handles=net_handles, loc='lower center', ncol=2,
-                  fontsize=FS_LEG-1.5, framealpha=0.88,
-                  bbox_to_anchor=(0.5,-0.12), bbox_transform=ax.transAxes,
-                  borderpad=0.4, handlelength=1.2)
-
-    def _sens_full_panel_row(ax, ds, global_sens, K_corr, K_id, tag,
-                              force_features):
-        features = ds['features']; p, T = len(features), ds['T']
-        t_grid = ds['t_grid']
-        avg_full = global_sens[2]
-        if force_features is None:
-            imps = {i: float(np.sum(np.abs(apply_kernel(avg_full[i], K_corr))))
-                    for i in range(p)}
-            fis = sorted(imps, key=imps.get, reverse=True)[:2]
-        else:
-            fis = [features.index(f) for f in force_features]
-        for fi in fis:
-            col    = FEAT_COLORS[features[fi]]
-            eff_id = apply_kernel(avg_full[fi], K_id)
-            eff_co = apply_kernel(avg_full[fi], K_corr)
-            ls = '-' if fi == fis[0] else '--'
-            ax.plot(t_grid, eff_id, color=col, lw=ID_LW, ls=ls,
-                    alpha=ID_ALPHA, zorder=2)
-            ax.plot(t_grid, eff_co, color=col, lw=MX_LW, ls=ls,
-                    label=features[fi] + ' (corr.)', zorder=3)
-        ax.axhline(0, color='gray', lw=0.5, ls=':')
-        _xticks(ax, ds, sparse=True)
-        ax.tick_params(labelsize=FS_TK)
-        ax.set_xlabel('Time', fontsize=FS_AX)
-        if tag == 'neso':
-            ax.yaxis.set_major_formatter(
-                matplotlib.ticker.FuncFormatter(
-                    lambda v, _: '{:.2f}'.format(v / 1e7)))
-            ylabel = r'Var$[F(t)]$ (MW$^2$, $\times 10^7$)'
-        else:
-            ylabel = ds['ylabel']['sensitivity']
-        ax.set_ylabel(ylabel, fontsize=FS_AX)
-        feat_str = ', '.join(features[fi] for fi in fis)
-        ax.set_title(
-            r'Full $\Phi_i$ = Total Sobol — corr. kernel' + '\n'
-            '{} — {}'.format(DS_LABEL[tag].split('\n')[0], feat_str),
-            fontsize=FS_T-1, fontweight='bold', color=DS_COLOR[tag])
-        corr_handles = [
-            Line2D([0],[0], color=FEAT_COLORS[features[fi]],
-                   lw=MX_LW, ls='-' if fi == fis[0] else '--',
-                   label=features[fi] + ' (corr.)')
-            for fi in fis]
-        extra_id = Line2D([0],[0], color='gray', lw=ID_LW, ls='-',
-                          alpha=ID_ALPHA, label='identity (faded)')
-        ax.legend(handles=corr_handles + [extra_id],
-                  fontsize=FS_LEG, loc='upper center',
-                  bbox_to_anchor=(0.5, -0.22), ncol=len(fis)+1,
-                  framealpha=0.85)
-        _shade(ax, ds)
-
-    K_id_ih = kernel_identity(ds_ih['T'])
-    K_id_ne = kernel_identity(ds_ne['T'])
-    _sens_full_panel_row(axes[0][2], ds_ih, global_sens_ih, K_ih, K_id_ih,
-                         'ihepc', None)
-    _sens_full_panel_row(axes[1][2], ds_ne, global_sens_ne, K_ne, K_id_ne,
-                         'neso',  ['month', 'season'])
-
-    fig.canvas.draw()
-    renderer = fig.canvas.get_renderer()
-
-    # Compute row bounding boxes
-    row_bbs = []
-    for axlist in [axes[0], axes[1]]:
-        xmins, ymins, xmaxs, ymaxs = [], [], [], []
-        for ax in axlist:
-            bb = ax.get_window_extent(renderer=renderer)
-            bb_fig = bb.transformed(fig.transFigure.inverted())
-            xmins.append(bb_fig.x0); ymins.append(bb_fig.y0)
-            xmaxs.append(bb_fig.x1); ymaxs.append(bb_fig.y1)
-        row_bbs.append((min(xmins), min(ymins), max(xmaxs), max(ymaxs)))
-
-    # Midpoint between IHEPC row bottom and NESO row top
-    ih_y0 = row_bbs[0][1]  # IHEPC axes bottom
-    ne_y1 = row_bbs[1][3]  # NESO axes top
-    y_mid = 0.5 * (ih_y0 + ne_y1)
-
-    pad = 0.016
-    eb_ih = 0.12  # IHEPC extra_bottom
-    eb_ne = 0.08  # NESO  extra_bottom
-    et_ih = 0.05  # IHEPC extra_top: lower upper edge of green box
-    et_ne = 0.11  # NESO  extra_top
-
-    for row_idx, (axlist, color) in enumerate([
-        (axes[0], DS_COLOR['ihepc']),
-        (axes[1], DS_COLOR['neso']),
-    ]):
-        rx0, ry0, rx1, ry1 = row_bbs[row_idx]
-        bx0 = rx0 - pad - 0.03
-        et  = et_ih if row_idx == 0 else et_ne
-        eb  = eb_ih if row_idx == 0 else eb_ne
-        bx1 = rx1 + pad + 0.02
-        by0_raw = ry0 - pad - eb
-        by1_raw = ry1 + pad + et
-        # Clip so boxes don't overlap: IHEPC box bottom ≥ y_mid, NESO box top ≤ y_mid
-        if row_idx == 0:  # IHEPC — clip bottom to y_mid
-            by0 = max(by0_raw, y_mid + 0.008)
-            by1 = by1_raw
-        else:             # NESO — clip top to y_mid
-            by0 = by0_raw
-            by1 = min(by1_raw, y_mid - 0.008)
-        rect = FancyBboxPatch((bx0, by0), bx1-bx0, by1-by0,
-                              boxstyle='round,pad=0.006',
-                              linewidth=1.4, edgecolor=color, facecolor=color,
-                              alpha=0.10, transform=fig.transFigure,
-                              zorder=0, clip_on=False)
-        fig.add_artist(rect)
-    return fig
-
-
 if __name__ == '__main__':
     print('\n'+'='*60)
-    print('  Energy Combined Example  (IHEPC + NESO)  v5')
+    print('  Energy Combined Example  (IHEPC + NESO)  v7')
     print('='*60)
 
     _require_dir(BASE_PLOT_DIR)
     _require_dir(GAME_CACHE_DIR)
 
-    # ── 1. Data ────────────────────────────────────────────────────────────
     print('\n[1] Loading data ...')
     ds_ih = load_ihepc()
     ds_ne = load_neso()
 
-    # ── 2. Models ──────────────────────────────────────────────────────────
     print('\n[2] Fitting models ...')
     for ds, name in [(ds_ih,'IHEPC'), (ds_ne,'NESO')]:
         X_tr,X_te,Y_tr,Y_te = train_test_split(
@@ -1693,12 +1588,10 @@ if __name__ == '__main__':
         print('  [{}] Test R2: {:.4f}'.format(name, m.evaluate(X_te,Y_te)))
         ds['model'] = m
 
-    # ── 3. Correlation kernels ─────────────────────────────────────────────
     print('\n[3] Building correlation kernels ...')
     K_ih = kernel_correlation(ds_ih['Y_raw']); ds_ih['K_corr'] = K_ih
     K_ne = kernel_correlation(ds_ne['Y_raw']); ds_ne['K_corr'] = K_ne
 
-    # ── 4. Profiles ────────────────────────────────────────────────────────
     print('\n[4] Selecting profiles ...')
     X_ih = ds_ih['X_np']; fn_ih = ds_ih['features']
     def find_ih(conds, lbl):
@@ -1725,19 +1618,18 @@ if __name__ == '__main__':
         return hits[len(hits)//2]
     x_ne1 = find_ne({'is_weekend':(-0.1,0.1),'season':(0.9,1.1)},
                     'Winter weekday')
+    print(dict(zip(fn_ih, x_ih1)))
+    print(dict(zip(fn_ne, x_ne1)))
 
-    # ── 5. Local games ─────────────────────────────────────────────────────
     print('\n[5] Loading / computing local games ...')
     local_ih = load_local_games(ds_ih, x_ih1, 'Typical_weekday')
     local_ne = load_local_games(ds_ne, x_ne1, 'Winter_weekday')
 
-    # Unpack for fig0 (uses mob/shap per game)
     mob_ih  = {gt: local_ih[gt][0] for gt in GAME_TYPES}
     shap_ih = {gt: local_ih[gt][1] for gt in GAME_TYPES}
     mob_ne  = {gt: local_ne[gt][0] for gt in GAME_TYPES}
     shap_ne = {gt: local_ne[gt][1] for gt in GAME_TYPES}
 
-    # ── 6. Global games ────────────────────────────────────────────────────
     print('\n[6] Computing / loading global effects ({} instances) ...'.format(
         GLOBAL_N_INSTANCES))
     global_ih = {}; global_ne = {}
@@ -1749,12 +1641,10 @@ if __name__ == '__main__':
         global_ne[gtype] = compute_global_effects(
             ds_ne, gtype, GLOBAL_N_INSTANCES, GLOBAL_SAMPLE_SIZE, RNG_SEED)
 
-    # ── 7. Per-instance prediction effects for PDP plots ──────────────────
-    print('\n[7] Loading / computing per-instance prediction effects ...')
-    per_inst_ih, X_glob_ih = load_per_instance_effects(ds_ih, RNG_SEED)
-    per_inst_ne, X_glob_ne = load_per_instance_effects(ds_ne, RNG_SEED)
+    print('\n[7] Loading / computing per-instance prediction effects (PDP) ...')
+    per_inst_ih, X_pdp_ih = load_per_instance_effects_pdp(ds_ih, RNG_SEED)
+    per_inst_ne, X_pdp_ne = load_per_instance_effects_pdp(ds_ne, RNG_SEED)
 
-    # ── 8. Generate figures ────────────────────────────────────────────────
     print('\n[8] Generating figures ...')
 
     savefig(
@@ -1763,13 +1653,6 @@ if __name__ == '__main__':
                        global_sens_ih=global_ih['sensitivity'],
                        global_sens_ne=global_ne['sensitivity']),
         'fig0_main_body.pdf')
-
-    savefig(
-        fig0_two_row(ds_ih, ds_ne, mob_ih, shap_ih, mob_ne, shap_ne,
-                     K_ih, K_ne,
-                     global_sens_ih=global_ih['sensitivity'],
-                     global_sens_ne=global_ne['sensitivity']),
-        'fig0_two_row.pdf')
 
     for ds, global_eff, tag in [
         (ds_ih, global_ih, 'ihepc'),
@@ -1787,12 +1670,12 @@ if __name__ == '__main__':
             fig2_local_prediction(ds, local_g, fs=_fs(3)),
             'fig2_local_prediction_{}.pdf'.format(tag))
 
-    for ds, global_eff, per_inst, X_glob, tag in [
-        (ds_ih, global_ih, per_inst_ih, X_glob_ih, 'ihepc'),
-        (ds_ne, global_ne, per_inst_ne, X_glob_ne, 'neso'),
+    for ds, global_eff, per_inst, X_pdp, tag in [
+        (ds_ih, global_ih, per_inst_ih, X_pdp_ih, 'ihepc'),
+        (ds_ne, global_ne, per_inst_ne, X_pdp_ne, 'neso'),
     ]:
         savefig(
-            fig3_global_pdp(ds, global_eff, per_inst, X_glob, fs=_fs(3)),
+            fig3_global_pdp(ds, global_eff, per_inst, X_pdp, fs=_fs(3)),
             'fig3_global_pdp_{}.pdf'.format(tag))
 
     for ds, local_g, tag in [
