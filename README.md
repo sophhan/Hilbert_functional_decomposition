@@ -3,7 +3,7 @@
 Code repository for the paper
 
 > **A Hilbert-Valued Functional Decomposition Framework for Explaining Time-Dependent Outputs**  
-> *NeurIPS 2026*
+> *NeurIPS 2025*
 
 ---
 
@@ -133,11 +133,21 @@ python ihepc_ngeso/energy_hfd.py
 
 ## Installation
 
+The repository includes a `requirements.txt` (generated from the development environment via `pip freeze`) and a `.python-version` file pinning the Python version used to produce all results. To reproduce the exact environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+If you prefer a lighter install without pinned transitive dependencies, the direct dependencies are:
+
 ```bash
 pip install numpy pandas matplotlib scikit-learn ngboost torch joblib yfinance ucimlrepo
 ```
 
-No GPU is required; all scripts default to CPU. Tested with Python 3.10.
+No GPU is required; all scripts default to CPU.
 
 ---
 
@@ -180,3 +190,6 @@ The kernel $K$ controls how temporal context is weighted when aggregating attrib
 
 ---
 
+## License
+
+Code is released under the MIT License. See `LICENSE` for details.
