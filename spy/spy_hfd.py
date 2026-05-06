@@ -1751,11 +1751,11 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
 
     fig, axes = plt.subplots(
         2, 4, figsize=(19, 2.9 * 2),
-        gridspec_kw={'width_ratios': [3, 3, 3, 1.8]})
+        gridspec_kw={'width_ratios': [1.5, 3.3, 3.3, 3.3]})
     fig.suptitle(
-        'Functional explanation framework: intraday volatility — '
+        'Hilbert-valued explanation framework: intraday volatility \u2014 '
         'kernel choice shapes the attribution profile\n'
-        'High-VIX Announcement profile — Local Prediction',
+        'High-VIX Announcement profile \u2014 Local Prediction',
         fontsize=FS_SUPTITLE, fontweight='bold')
 
     for r, (gtype, y_label, pure_eff, partial_eff, full_eff,
@@ -1773,8 +1773,31 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
                         color=FEAT_COLORS[pnames[fi]], lw=2.0, ls=ls,
                         label=pnames[fi])
 
-        # Pure effects panel
-        ax = axes[r, 0]
+        # Col 0: time-aggregated bars
+        effect_dicts_bar = {
+            'pure': pure_eff, 'partial': partial_eff, 'full': full_eff}
+        _draw_bar_panel(axes[r, 0], effect_dicts_bar, kern_fn, pnames, sc)
+
+        # Override the bar panel's legend: just slightly past the panel edge,
+        # not fully outside.
+        leg_old = axes[r, 0].get_legend()
+        if leg_old is not None:
+            leg_handles = leg_old.legend_handles if hasattr(
+                leg_old, 'legend_handles') else leg_old.legendHandles
+            leg_old.remove()
+            axes[r, 0].legend(
+                handles=leg_handles, fontsize=FS_LEGEND - 1,
+                loc='upper right', bbox_to_anchor=(1.08, 0.98),
+                bbox_transform=axes[r, 0].transAxes,
+                borderaxespad=0., framealpha=0.9)
+
+        # Row label close to the bar panel.
+        axes[r, 0].text(-0.75, 0.5, row_label, transform=axes[r, 0].transAxes,
+                        fontsize=FS_AXIS, va='center', ha='right',
+                        rotation=90, color='#333', fontweight='bold')
+
+        # Col 1: pure
+        ax = axes[r, 1]
         _plot_feat(ax, pure_eff)
         ax.axhline(0, color='gray', lw=0.5, ls=':')
         _period_shade(ax); _ann_vline(ax); _set_time_axis(ax, sparse=True)
@@ -1782,14 +1805,11 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
         ax.set_xlabel('Time', fontsize=FS_AXIS)
         ax.set_ylabel(y_label, fontsize=FS_AXIS)
         ax.set_title(lbl_pure, fontsize=FS_TITLE - 1, fontweight='bold')
-        ax.text(-0.32, 0.5, row_label, transform=ax.transAxes,
-                fontsize=FS_AXIS, va='center', ha='right',
-                rotation=90, color='#333', fontweight='bold')
         legend_loc = 'lower left' if r == 1 else 'upper left'
         ax.legend(fontsize=FS_LEGEND, loc=legend_loc, framealpha=0.9)
 
-        # Partial (Shapley) effects panel with partial/pure ratio annotation
-        ax = axes[r, 1]
+        # Col 2: partial
+        ax = axes[r, 2]
         _plot_feat(ax, partial_eff)
         pure_int = float(np.sum(np.abs(
             apply_kernel(pure_eff[fi_ann], kern_fn(fi_ann))))) * sc
@@ -1808,8 +1828,8 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
         ax.set_xlabel('Time', fontsize=FS_AXIS)
         ax.set_title(lbl_partial, fontsize=FS_TITLE - 1, fontweight='bold')
 
-        # Interaction panel: vix_prev x ann_indicator
-        ax = axes[r, 2]
+        # Col 3: interaction
+        ax = axes[r, 3]
         raw    = moebius_hv['prediction'].get(
             (fi_vix, fi_ann), np.zeros(T_BARS))
         int_mx = apply_kernel(raw, K_inter) * sc
@@ -1820,26 +1840,22 @@ def plot_main_body_summary(moebius_hv, shapley_hv, pnames):
         ax.plot(t_grid, int_mx, color='#333', lw=1.8)
         integ = float(np.trapz(raw, t_grid)) * sc
         ax.text(0.03, 0.97,
-                r'$\int m_{{ij}}\,dt$ = {:.3f}'.format(integ),
+                'time-aggregated = {:.3f}'.format(integ),
                 transform=ax.transAxes, fontsize=FS_ANNOT,
                 va='top', ha='left',
                 bbox=dict(boxstyle='round,pad=0.25', fc='white',
                           ec='#aaa', alpha=0.85))
-        ax.set_title('Interaction — vix_prev x ann_indicator',
+        ax.set_title('Interaction \u2014 vix_prev \u00d7 ann_indicator',
                      fontsize=FS_TITLE - 1, fontweight='bold')
         ax.axhline(0, color='gray', lw=0.5, ls=':')
         _period_shade(ax); _ann_vline(ax); _set_time_axis(ax, sparse=True)
         ax.tick_params(labelsize=FS_TICK)
         ax.set_xlabel('Time', fontsize=FS_AXIS)
 
-        # Time-aggregated bar chart
-        effect_dicts_bar = {
-            'pure': pure_eff, 'partial': partial_eff, 'full': full_eff}
-        _draw_bar_panel(axes[r, 3], effect_dicts_bar, kern_fn, pnames, sc)
-        _align_row_ylims([axes[r, c] for c in range(3)])
+        _align_row_ylims([axes[r, c] for c in (1, 2, 3)])
 
-    plt.tight_layout(rect=[0.04, 0, 1, 0.91])
-    fig.subplots_adjust(top=0.86, hspace=0.70)
+    plt.tight_layout(rect=[0.06, 0, 1, 0.91])
+    fig.subplots_adjust(top=0.86, hspace=0.70, wspace=0.28)
     return fig
 
 
