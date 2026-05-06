@@ -1,314 +1,185 @@
-"""
-Working Example ICU
-=======================
+# A Hilbert-Valued Functional Decomposition Framework for Explaining Time-Dependent Outputs
 
-Self-contained script that generates the data files consumed by the TikZ
-intro figure (intro_figure.tex):
+Code repository for the paper
 
-    curves_id.csv   -- t, x1, x2, x3   (identity-kernel time-resolved curves)
-    curves_co.csv   -- t, x1, x2, x3   (correlation-kernel time-resolved curves)
-    values.tex      -- LaTeX macros holding bar heights and y-axis maxima
+> **A Hilbert-Valued Functional Decomposition Framework for Explaining Time-Dependent Outputs**  
+> *NeurIPS 2025*
 
-ICU early-warning toy model
-----------------------------
-Three features X1, X2, X3 affect a function-valued output F(x)(t) over
-t in [0, 24] h:
+---
 
-    F(x)(t) = X1 * exp(-0.2*t)             # baseline recovery trend
-            + X2 * exp(-(t-10)^2 / 2)      # early shock at t=10h
-            + X3 * exp(-(t-18)^2 / 2)      # late deterioration at t=18h
+## Overview
 
-Feature distribution: X_i ~ Uniform[0, 1], independent.
-    E[X_i] = 0.5,  Var[X_i] = 1/12.
+The *H-FD framework* extends cooperative game-theoretic explanation methods to models whose outputs are trajectories or functional curves rather than scalar values. Given a model $F : \mathcal{X} \to \mathcal{H}$ mapping a feature vector to a Hilbert-space-valued output (e.g. an intraday volatility curve or a 24-hour demand profile), H-FD decomposes the output into *pure*, *partial*, and *full* feature effects via the functional Möbius transform, parameterised by a user-chosen output kernel $K$ that encodes which temporal relationships matter for the explanation.
 
-Centred (zero-mean-background) effect of feature i at value x_i*:
-    e_i(t) = (x_i* - mu) * phi_i(t)
+---
 
-This is the instantaneous (identity-kernel) attribution for feature i.
+## Repository structure
 
-Two output kernels are demonstrated
--------------------------------------
-1. Identity kernel  K(t, s) = delta(t - s)
-   Effect: (K e_i)(t) = e_i(t)  — pointwise attribution, no temporal coupling.
+```
+.
+├── synthetic_experiments/              # Synthetic experiment scripts
+│   ├── gt_validation.py                # Part 1: ground truth effect recovery
+│   ├── thm2_validation.py              # Part 2: Sobol theorem validation
+│   ├── kernel_guidance.py              # Part 3: kernel guidance figures
+│   ├── ranking_preservation.py         # Part 3: ranking preservation across games
+│   └── working_example_ICU.py          # ICU working example / intro figure data
+│
+├── spy/                                # SPY intraday volatility experiment
+│   ├── spy_hfd.py                      # Main script
+│   ├── data/                           # Raw data (see Data section)
+│   └── game_results/                   # Cached game results (.npz)
+│
+├── ihepc_ngeso/                        # Energy demand experiment
+│   ├── energy_hfd.py                   # Main script
+│   ├── data/                           # Raw data (see Data section)
+│   └── game_results_energy/            # Cached game results (.npz)
+│
+└── plots/                              # All generated figures
+    ├── synthetic_experiments/
+    │   ├── gt_validation/
+    │   ├── thm2_validation/
+    │   └── kernel_guidance/
+    ├── spy/
+    ├── energy/
+    └── icu_illustration/
+```
 
-2. Correlation-aware kernel
-       K(t, s) = Cov(F(X)(t), F(X)(s)) / (std(F(X)(t)) * std(F(X)(s)))
-   where:
-       Cov(F(X)(t), F(X)(s)) = sum_i Var(X_i) * phi_i(t) * phi_i(s)
+---
 
-   This correlation matrix ties together time points that co-vary across the
-   feature distribution — i.e. phases that are driven by the same underlying
-   basis function. It is applied in row-normalised form so that each time
-   point t receives a weighted average of the instantaneous effect over the
-   temporal neighbourhood defined by the model's own covariance structure.
+## Scripts
 
-   Effect: (K e_i)(t) = [K(t,:) @ e_i] / [sum_s K(t,s) * dt]
-   This is the "phase-aware redistributed" attribution.
+| Script | Paper section | What it produces |
+|--------|--------------|-----------------|
+| `synthetic_experiments/gt_validation.py` | Sec. 5 / App. D.1 | Effect recovery vs. $n$ for four model classes + oracle (Figs. 5, 6) |
+| `synthetic_experiments/thm2_validation.py` | Sec. 5 / App. D.1 | Sobol index recovery under the constant kernel (Fig. 7) |
+| `synthetic_experiments/kernel_guidance.py` | Sec. 5.1 / App. D.2 | Kernel guidance figures — ICU, price pulse, periodic (Fig. 2) |
+| `synthetic_experiments/ranking_preservation.py` | App. D.2 | Ranking preservation across all three game types (Fig. 8) |
+| `synthetic_experiments/working_example_ICU.py` | Fig. 1 | CSV and LaTeX macros for the intro figure |
+| `spy/spy_hfd.py` | Sec. 5.2 / App. D.3 | Random Forest on SPY 5-min bars (Figs. 3, 9–12) |
+| `ihepc_ngeso/energy_hfd.py` | Sec. 5.2 / App. D.4 | UCI IHEPC and NESO GB national demand (Figs. 4, 13–21) |
 
-Three aggregation levels are computed
---------------------------------------
-- Time-resolved:    curve (K e_i)(t) for all t          -> written to CSV
-- Time-specific:    (K e_i)(t0) at a single focus point  -> written to values.tex
-- Time-aggregated:  integral_T (K e_i)(t) dt             -> written to values.tex
+---
 
-The values.tex file defines LaTeX \\newcommand macros that are directly
-\\input'd by the TikZ figure source, avoiding any manual copy-paste of
-numerical values into the LaTeX source.
+## Data
 
-Output files (written to plots/synthetic_experiments/working_example_ICU/)
---------------------------------------------------------------------------
-    curves_id.csv   — 240-row CSV: t, e1, e2, e3 under identity kernel
-    curves_co.csv   — 240-row CSV: t, e1, e2, e3 under correlation kernel
-    values.tex      — LaTeX macros for bar heights and y-axis limits
+### Synthetic experiments
+Fully self-contained — no external data required.
 
-Usage
------
-    python generate_figure_data.py
-"""
+### SPY intraday volatility
+The 5-minute bar data was purchased from a commercial provider (Polygon.io, Stocks Starter tier) and **cannot be redistributed**. The precomputed game result caches in `spy/game_results/` are provided so that all figures can be reproduced without the raw data — the script detects and loads `.npz` cache files automatically:
 
-import os
+```bash
+python spy/spy_hfd.py
+```
 
-import numpy as np
+If you have the raw bar data, place it at `spy/data/spy_5min_cache.csv` and the script will run the full pipeline including model fitting and game computation.
 
+VIX data is fetched automatically from Yahoo Finance via `yfinance` and cached at `spy/data/vix_daily_cache.csv`.
 
-# ---------------------------------------------------------------------------
-# Output directory
-# ---------------------------------------------------------------------------
+**Note on cache contents.** Each cached game-result file stores an explicand feature vector `x_inst` alongside the attribution trajectories. To stay clearly within the Polygon.io license terms, two fields derived from the proprietary bar data — `overnight_ret` and `trailing_rv` — are replaced with NaN in the public caches. The remaining four fields (`vix_prev` from Yahoo Finance, `ann_indicator`, `day_of_week`, `month` from public schedules) are preserved. This affects only the x-axis bins of those two features in the PDP figure (fig3); all other figures are reproduced exactly. The stripping procedure is implemented in `anonymize_caches.py`.
 
-OUT_DIR = os.path.join("plots", "synthetic_experiments", "working_example_ICU")
+### Energy demand — UCI IHEPC
+The Individual Household Electric Power Consumption dataset is downloaded automatically from the [UCI ML Repository](https://archive.ics.uci.edu/dataset/235) via the `ucimlrepo` package on first run, and cached locally as a parquet file. No manual download needed.
 
+### Energy demand — NESO GB national grid
+Half-hourly national demand files must be downloaded from the [NESO data portal](https://www.neso.energy/data-portal/historic-demand-data) for years 2018–2022 and placed in the `ihepc_ngeso/data/` directory:
 
-# ---------------------------------------------------------------------------
-# Model parameters
-# ---------------------------------------------------------------------------
+```
+ihepc_ngeso/data/demanddata_2018.csv
+ihepc_ngeso/data/demanddata_2019.csv
+ihepc_ngeso/data/demanddata_2020.csv
+ihepc_ngeso/data/demanddata_2021.csv
+ihepc_ngeso/data/demanddata_2022.csv
+```
 
-T_MAX    = 24.0    # time horizon in hours
-T_POINTS = 240     # number of grid points (resolution for curves and integrals)
-T0_FOCUS = 6.0     # focus time point t0 for the time-specific bar panels
+As with SPY, precomputed caches in `ihepc_ngeso/game_results_energy/` allow figure reproduction without the raw data files.
 
-X_STAR = (0.8, 0.9, 0.7)   # specific input x* being explained
-MU     = 0.5                # E[X_i] for X_i ~ Uniform[0, 1]
-VAR    = 1.0 / 12.0         # Var[X_i] for X_i ~ Uniform[0, 1]
+---
 
+## Reproducing the paper figures
 
-# ---------------------------------------------------------------------------
-# Basis functions defining the ICU model
-# ---------------------------------------------------------------------------
+### Synthetic experiments (no data required)
 
-def phi1(tt: np.ndarray) -> np.ndarray:
-    """
-    Basis function for X1: slow exponential decay.
-    Models a baseline recovery trend that decays over the full 24h window.
-    """
-    return np.exp(-0.2 * tt)
+```bash
+# Ground truth validation — effect recovery vs. n
+# Full run (≈ 30 min on 32 cores):
+python synthetic_experiments/gt_validation.py --n_runs 30 --n_jobs 32
 
+# Quick smoke test (1 seed, reduced n grid):
+python synthetic_experiments/gt_validation.py --quick
 
-def phi2(tt: np.ndarray) -> np.ndarray:
-    """
-    Basis function for X2: sharp Gaussian peak at t = 10h.
-    Models an early shock event with localised temporal influence.
-    """
-    return np.exp(-0.5 * (tt - 10.0) ** 2)
+# Regenerate figures only from existing cache:
+python synthetic_experiments/gt_validation.py --plots_only
 
+# Sobol theorem validation
+python synthetic_experiments/thm2_validation.py
 
-def phi3(tt: np.ndarray) -> np.ndarray:
-    """
-    Basis function for X3: Gaussian peak at t = 18h.
-    Models a late deterioration event in the final hours of the window.
-    """
-    return np.exp(-0.5 * (tt - 18.0) ** 2)
+# Kernel guidance and ranking preservation
+python synthetic_experiments/kernel_guidance.py
+python synthetic_experiments/ranking_preservation.py
+```
 
+### Real-data experiments
 
-# ---------------------------------------------------------------------------
-# Kernel construction
-# ---------------------------------------------------------------------------
+```bash
+# SPY intraday volatility (figures from cache, no bar data needed)
+python spy/spy_hfd.py
 
-def correlation_kernel(t_grid: np.ndarray) -> np.ndarray:
-    """
-    Construct the output-correlation kernel induced by the ICU toy model.
+# Energy demand (figures from cache, no raw demand files needed)
+python ihepc_ngeso/energy_hfd.py
+```
 
-    The kernel is derived from the model's output covariance:
-        Cov(F(X)(t), F(X)(s)) = Var(X) * sum_i phi_i(t) * phi_i(s)
+---
 
-    Normalised to a correlation matrix (unit diagonal):
-        K(t, s) = Cov(F(X)(t), F(X)(s)) / sqrt(Var(F(X)(t)) * Var(F(X)(s)))
+## Installation
 
-    This kernel ties together time points that co-vary in the model's output
-    distribution — i.e. times driven by the same underlying basis functions.
-    It is data-adaptive (no bandwidth parameter) and respects the model's
-    own temporal structure.
+```bash
+pip install numpy pandas matplotlib scikit-learn ngboost torch joblib yfinance ucimlrepo
+```
 
-    Parameters
-    ----------
-    t_grid : ndarray of shape (T,)
+No GPU is required; all scripts default to CPU. Tested with Python 3.10.
 
-    Returns
-    -------
-    K : ndarray of shape (T, T), symmetric, unit diagonal
-    """
-    p1  = phi1(t_grid)
-    p2  = phi2(t_grid)
-    p3  = phi3(t_grid)
-    cov = VAR * (np.outer(p1, p1) + np.outer(p2, p2) + np.outer(p3, p3))
-    std = np.sqrt(np.diag(cov))
-    std = np.where(std < 1e-12, 1.0, std)   # avoid division by zero at tails
-    return cov / np.outer(std, std)
+---
 
+## Cached game results
 
-def apply_kernel(effect: np.ndarray, K: np.ndarray, dt: float) -> np.ndarray:
-    """
-    Apply kernel K to an instantaneous effect curve in row-normalised form.
+Computing game values from scratch requires evaluating $2^p$ coalition values per game and is computationally expensive. All precomputed `.npz` cache files are provided in `spy/game_results/` and `ihepc_ngeso/game_results_energy/`. Scripts load these automatically when present.
 
-    Computes the "phase-aware redistributed" attribution:
-        (Ke)(t) = [sum_s K(t,s) * e(s) * dt] / [sum_s K(t,s) * dt]
+Each script defines `CACHE_VERSION_*` string constants that tag the cache filenames. **Do not change these constants** unless intentionally recomputing with new settings, as doing so will bypass the provided caches.
 
-    Row normalisation ensures that:
-      - Attribution magnitudes remain comparable across kernels.
-      - A constant input e(t) = c is mapped to (Ke)(t) = c for all kernels.
-      - The result is a weighted temporal average of e, where the weights
-        at each t are given by the kernel row K(t,:).
+---
 
-    For the identity kernel this is a no-op, so it is not called for that case.
+## Game formulations
 
-    Parameters
-    ----------
-    effect : ndarray of shape (T,)   — instantaneous attribution e_i(t)
-    K      : ndarray of shape (T, T) — kernel matrix
-    dt     : float                   — time step
+The framework supports three cooperative game types:
 
-    Returns
-    -------
-    ke : ndarray of shape (T,)   — kernel-redistributed attribution (Ke)(t)
-    """
-    row_sum = K.sum(axis=1, keepdims=True) * dt
-    row_sum = np.where(np.abs(row_sum) < 1e-12, 1.0, row_sum)
-    return (K / row_sum) @ effect * dt
+**Prediction game** *(local, instance-specific)*  
+$v(S)(t) = \mathbb{E}_{X_{-S}}[F(x^*_S, X_{-S})(t)]$ — how much does each feature shift the predicted trajectory for a specific input $x^*$?
 
+**Sensitivity game** *(global)*  
+$v(S)(t) = \mathrm{Var}_{X_S}[\mathbb{E}_{X_{-S}}[F(X_S, X_{-S})(t)]]$ — how much of total trajectory variance is explained by $S$?  
+Pure = closed Sobol; Partial = functional Shapley sensitivity; Full = total Sobol.
 
-# ---------------------------------------------------------------------------
-# Main pipeline
-# ---------------------------------------------------------------------------
+**Risk game** *(global, SAGE/PFI sign convention)*  
+$v(S)(t) = \mathbb{E}[(Y(t){-}\mu(t))^2] - \mathbb{E}[(Y(t){-}\mathbb{E}_{X_{-S}}[F(X_S, X_{-S})(t)])^2]$ — how much does knowing $S$ reduce prediction error?  
+Pure = pure risk reduction; Partial = SAGE; Full = PFI.
 
-def main() -> None:
-    """
-    Execute the full data generation pipeline:
-        1. Compute instantaneous (identity-kernel) effects e_i(t)
-        2. Apply correlation kernel to get redistributed effects
-        3. Write time-resolved curves to CSV files
-        4. Compute time-specific (at t0) and time-aggregated scalar values
-        5. Write all scalar values as LaTeX \\newcommand macros to values.tex
+---
 
-    All output files are written to OUT_DIR:
-        plots/synthetic_experiments/working_example_ICU/
-    """
-    os.makedirs(OUT_DIR, exist_ok=True)
+## Output kernels
 
-    t  = np.linspace(0.0, T_MAX, T_POINTS)
-    dt = float(t[1] - t[0])
+The kernel $K$ controls how temporal context is weighted when aggregating attribution curves. All kernels are applied in row-normalised form so that attribution magnitudes remain comparable across kernel choices.
 
-    # ------------------------------------------------------------------
-    # Centred instantaneous effects: e_i(t) = (x*_i - mu) * phi_i(t)
-    # These are the identity-kernel attributions (no temporal coupling).
-    # ------------------------------------------------------------------
-    e1 = (X_STAR[0] - MU) * phi1(t)
-    e2 = (X_STAR[1] - MU) * phi2(t)
-    e3 = (X_STAR[2] - MU) * phi3(t)
+| Kernel | When to use |
+|--------|-------------|
+| Identity $K(t,s) = \delta(t{-}s)$ | Pointwise attribution; no temporal context |
+| OU $K(t,s) = e^{-\|t-s\|/\ell}$ | Local symmetric smoothing over a neighbourhood |
+| Causal $K(t,s) = e^{-(t-s)/\ell} \cdot \mathbf{1}_{t \geq s}$ | Forward-only; no anticipation of future events |
+| Correlation $K(t,s) = \mathrm{Corr}(F(X)(t), F(X)(s))$ | Data-adaptive; no bandwidth parameter needed |
+| Periodic $K(t,s) = e^{-2\sin^2(\pi\|t-s\|/p)/\ell^2}$ | Recurring daily or seasonal patterns |
 
-    # ------------------------------------------------------------------
-    # Correlation-kernel redistributed attribution
-    # Each e_i is convolved with the correlation kernel (row-normalised),
-    # spreading effect mass into the temporal neighbourhood of each t.
-    # ------------------------------------------------------------------
-    K     = correlation_kernel(t)
-    e1_co = apply_kernel(e1, K, dt)
-    e2_co = apply_kernel(e2, K, dt)
-    e3_co = apply_kernel(e3, K, dt)
+---
 
-    # ------------------------------------------------------------------
-    # Write time-resolved curves to CSV
-    # Each row: t, e_X1(t), e_X2(t), e_X3(t)
-    # ------------------------------------------------------------------
-    np.savetxt(
-        os.path.join(OUT_DIR, "curves_id.csv"),
-        np.column_stack([t, e1, e2, e3]),
-        header="t,x1,x2,x3", comments="", delimiter=",", fmt="%.6f",
-    )
-    np.savetxt(
-        os.path.join(OUT_DIR, "curves_co.csv"),
-        np.column_stack([t, e1_co, e2_co, e3_co]),
-        header="t,x1,x2,x3", comments="", delimiter=",", fmt="%.6f",
-    )
+## License
 
-    # ------------------------------------------------------------------
-    # Time-specific attribution at the focus point t0
-    # ------------------------------------------------------------------
-    idx0    = int(np.argmin(np.abs(t - T0_FOCUS)))
-    spec_id = [float(e1[idx0]),    float(e2[idx0]),    float(e3[idx0])]
-    spec_co = [float(e1_co[idx0]), float(e2_co[idx0]), float(e3_co[idx0])]
-
-    # ------------------------------------------------------------------
-    # Time-aggregated attribution: integral_T e_i(t) dt
-    # Computed via the trapezoidal rule.
-    # ------------------------------------------------------------------
-    agg_id = [
-        float(np.trapezoid(e1,    dx=dt)),
-        float(np.trapezoid(e2,    dx=dt)),
-        float(np.trapezoid(e3,    dx=dt)),
-    ]
-    agg_co = [
-        float(np.trapezoid(e1_co, dx=dt)),
-        float(np.trapezoid(e2_co, dx=dt)),
-        float(np.trapezoid(e3_co, dx=dt)),
-    ]
-
-    # ------------------------------------------------------------------
-    # Y-axis maxima for the TikZ plots (with 30% headroom)
-    # ------------------------------------------------------------------
-    ymax_curve_id = float(np.max(np.abs([e1,    e2,    e3])))
-    ymax_curve_co = float(np.max(np.abs([e1_co, e2_co, e3_co])))
-
-    # ------------------------------------------------------------------
-    # Console summary for verification
-    # ------------------------------------------------------------------
-    print(f"t0 = {T0_FOCUS:g} h")
-    print(f"  spec_id (Identity    @ t0) = {spec_id}")
-    print(f"  spec_co (Correlation @ t0) = {spec_co}")
-    print(f"  agg_id  (Identity,    integrated over T) = {agg_id}")
-    print(f"  agg_co  (Correlation, integrated over T) = {agg_co}")
-
-    # ------------------------------------------------------------------
-    # Write LaTeX macro file
-    # Defines \newcommand macros for all bar heights and y-axis limits.
-    # These are \input'd directly by intro_figure.tex to avoid manual
-    # copy-paste of numerical values into the LaTeX source.
-    #
-    # Naming convention:
-    #   spec{ID|CO}{a|b|c}   — time-specific values for X1/X2/X3
-    #   agg{ID|CO}{a|b|c}    — time-aggregated values for X1/X2/X3
-    #   ymax{Curve|Spec|Agg}{ID|CO} — y-axis upper limits with headroom
-    # ------------------------------------------------------------------
-    with open(os.path.join(OUT_DIR, "values.tex"), "w", encoding="utf-8") as fh:
-        fh.write("% Auto-generated by working_example_ICU.py — do not edit by hand.\n")
-        # Time-specific bar heights
-        for name, value in zip(["specIDa", "specIDb", "specIDc"], spec_id):
-            fh.write(f"\\newcommand{{\\{name}}}{{{value:.4f}}}\n")
-        for name, value in zip(["specCOa", "specCOb", "specCOc"], spec_co):
-            fh.write(f"\\newcommand{{\\{name}}}{{{value:.4f}}}\n")
-        # Time-aggregated bar heights
-        for name, value in zip(["aggIDa",  "aggIDb",  "aggIDc"],  agg_id):
-            fh.write(f"\\newcommand{{\\{name}}}{{{value:.4f}}}\n")
-        for name, value in zip(["aggCOa",  "aggCOb",  "aggCOc"],  agg_co):
-            fh.write(f"\\newcommand{{\\{name}}}{{{value:.4f}}}\n")
-        # Y-axis limits with headroom factors
-        fh.write(f"\\newcommand{{\\ymaxCurveID}}{{{ymax_curve_id * 1.30:.4f}}}\n")
-        fh.write(f"\\newcommand{{\\ymaxCurveCO}}{{{ymax_curve_co * 1.30:.4f}}}\n")
-        fh.write(f"\\newcommand{{\\ymaxSpecID}}{{{max(spec_id) * 1.40:.4f}}}\n")
-        fh.write(f"\\newcommand{{\\ymaxSpecCO}}{{{max(spec_co) * 1.40:.4f}}}\n")
-        fh.write(f"\\newcommand{{\\ymaxAggID}}{{{max(agg_id) * 1.30:.4f}}}\n")
-        fh.write(f"\\newcommand{{\\ymaxAggCO}}{{{max(agg_co) * 1.30:.4f}}}\n")
-
-    print(f"\nAll outputs written to: {OUT_DIR}/")
-
-
-if __name__ == "__main__":
-    main()
+Code is released under the MIT License. See `LICENSE` for details.

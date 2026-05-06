@@ -23,16 +23,25 @@ use the precomputed game result caches provided in the repository:
     game_results/global_prediction_inst*.npz   (per-instance prediction)
     game_results/pdp_spy_inst*.npz              (per-instance PDP)
 
+In the public cache files the explicand `x_inst` vectors have two fields
+replaced with NaN: `overnight_ret` (index 1) and `trailing_rv` (index 4).
+Both are derived from the proprietary 5-minute bar data and are stripped
+to comply with the data provider's license. The remaining four fields
+(`vix_prev`, `ann_indicator`, `day_of_week`, `month`) are public and
+preserved. See `anonymize_caches.py` for the stripping procedure. This
+affects only the x-axis values of these two features in the PDP figure
+(fig3); all other figures are unaffected.
+
 Cache version constants (do not change unless recomputing from scratch):
     CACHE_VERSION_LOCAL  = 'v5'   — local prediction game caches
     CACHE_VERSION_GLOBAL = 'v7'   — global sensitivity / risk game caches
 
 Running with cached results
 ---------------------------
-If the raw data is unavailable, the script will fail at step [1] (data
-loading). All downstream steps (figures) can be reproduced by ensuring
-the .npz cache files are present in game_results/. The caches are loaded
-automatically when found.
+If the raw data is unavailable, the script automatically detects that the
+bar cache is missing and skips steps [1]–[2] (data loading and model
+fitting), loading all results directly from the .npz cache files in
+game_results/.
 
 Features (day-level predictors)
 --------------------------------
@@ -92,7 +101,7 @@ All figures are saved to plots/spy/:
 
 Usage
 -----
-    python spy_hfd.py
+    python spy_rf_v8.py
 
 With precomputed caches (no raw data required):
     Ensure game_results/*.npz are present, then run as above.
