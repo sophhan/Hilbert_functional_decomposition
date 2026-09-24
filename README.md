@@ -1,9 +1,9 @@
-# A Hilbert-Valued Functional Decomposition Framework for Explaining Time-Dependent Outputs
+# A FEATURE-BASED EXPLANATION FRAMEWORK FOR TIME-DEPENDENT OUTPUTS
 
 Code repository for the paper
 
-> **A Hilbert-Valued Functional Decomposition Framework for Explaining Time-Dependent Outputs**  
-> *NeurIPS 2025*
+> **A Feature-based Explanation Framework for Time-Dependent Outputs**  
+> *ICLR 2026*
 
 ---
 
